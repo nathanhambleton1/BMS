@@ -46,6 +46,17 @@
 %   OPTIONS -- edit these two lines if you want different behaviour:
 RUN_TESTS = true;    % set false to skip step 3 and open the UI faster
 LAUNCH_UI = true;    % set false for a command-line-only session
+SIMPLE_UI = true;    % true opens bcpSimple, false opens the full bcpApp
+%
+%   bcpSimple asks for the nine numbers you have to decide -- cell, series,
+%   parallel, pulse power, pulse length, repeat period, charge current, stop
+%   SOC, starting SOC -- and derives every threshold and gain from them by the
+%   same autofillAll() the full window's "Auto-fill all" button calls. It also
+%   states the pulse current, the SOC per pulse and the recharge time as you
+%   type, so a load the pack cannot deliver is visible before you run anything.
+%
+%   bcpApp is still there and still exposes every field. Open it any time with
+%   bcpApp, or set SIMPLE_UI = false.
 
 %   Command-line equivalent of everything the UI does:
 %
@@ -124,8 +135,19 @@ else
 end
 
 %% 4. UI --------------------------------------------------------------------
-if LAUNCH_UI
-    fprintf('\n[4/4] Opening the UI...\n');
+if LAUNCH_UI && SIMPLE_UI
+    fprintf('\n[4/4] Opening the short UI...\n');
+    app = bcpSimple(); %#ok<NASGU>  keep the handle alive in the base workspace
+    fprintf('      Done. Set the numbers top to bottom, then press Run.\n\n');
+    fprintf('      The line under each group says what your numbers mean for\n');
+    fprintf('      this pack -- the current the pulse will really draw, the SOC\n');
+    fprintf('      it costs, and whether the gap is long enough to put it back.\n');
+    fprintf('      They update as you type, so a load the pack cannot deliver\n');
+    fprintf('      shows up before you spend a run finding out.\n\n');
+    fprintf('      Every field:      bcpApp\n');
+    fprintf('      The whole test:   RUN_PULSE_TEST\n\n');
+elseif LAUNCH_UI
+    fprintf('\n[4/4] Opening the full UI...\n');
     app = bcpApp(); %#ok<NASGU>  keep the handle alive in the base workspace
     fprintf('      Done. The window is yours.\n\n');
     fprintf('      Pack tab first, then Load, then press "Auto-fill all".\n');
@@ -133,7 +155,7 @@ if LAUNCH_UI
     fprintf('      harness" builds a throwaway model with a crude battery\n');
     fprintf('      stand-in so you can get the behaviour right in one second\n');
     fprintf('      per run, before touching the model you care about.\n\n');
-    fprintf('      Reopen the UI any time with:  bcpApp\n\n');
+    fprintf('      Shorter window any time with:  bcpSimple\n\n');
 else
-    fprintf('\n[4/4] UI skipped (LAUNCH_UI = false). Open it with:  bcpApp\n\n');
+    fprintf('\n[4/4] UI skipped (LAUNCH_UI = false). Open it with:  bcpSimple\n\n');
 end

@@ -37,6 +37,15 @@ classdef Harness < handle
         SOC_spread double = 0.02 % cell-to-cell initial SOC spread (peak-to-peak)
         R_spread   double = 0.10 % cell-to-cell resistance spread (fraction)
         Seed       double = 7    % fixed, so a run is reproducible
+
+        CellTables = bcp.CellTables.empty
+        %  Optional bcp.CellTables. Empty (the default) gives the stand-in a
+        %  generic NMC OCV curve and the flat datasheet resistance from
+        %  PackSpec.Cell -- fine for proving the blocks, useless for comparing
+        %  against a Simscape run. Supply the tables read out of your pack's
+        %  generated .ssc and the harness and the real model are then computing
+        %  from the same cell, so a disagreement between them is a finding
+        %  rather than an artefact of two different curves.
     end
 
     properties (SetAccess = private)
@@ -66,6 +75,20 @@ classdef Harness < handle
             end
             new_system(model);
             open_system(model);
+
+            % The PackSpec is authoritative for capacity, because that is what
+            % every SOC percentage in the report is computed against. If the
+            % tables were read from a different cell than the spec describes,
+            % the run is comparing two packs and every SOC number is off by the
+            % ratio -- silently, because nothing else can see both.
+            if ~isempty(obj.CellTables) && ...
+                    abs(obj.CellTables.Q_Ah - obj.Project.Pack.Cell.Q_Ah) > 1e-6
+                warning('bcp:Harness:CapacityMismatch', ...
+                    ['CellTables says %.4f Ah and PackSpec.Cell says %.4f Ah. The ' ...
+                     'plant will use the PackSpec value. Build the spec with ' ...
+                     'ct.toCellLibrary() so the two cannot disagree.'], ...
+                    obj.CellTables.Q_Ah, obj.Project.Pack.Cell.Q_Ah);
+            end
 
             Ts_bms   = obj.Project.Bms.Ts;
             Ts_plant = Ts_bms / obj.PlantRatio;
@@ -243,13 +266,16 @@ classdef Harness < handle
             rs = RandStream('twister','Seed',obj.Seed);
             soc0 = obj.SOC_init + obj.SOC_spread * (rand(rs, S, 1) - 0.5);
             soc0 = min(max(soc0, 0.02), 0.98);
-            R0   = (spec.Cell.R_dc_Ohm / spec.P) * ...
-                   (1 + obj.R_spread * (rand(rs, S, 1) - 0.5));
+
+            % Dimensionless per-element multiplier on whatever resistance curve
+            % the plant ends up using, so the spread survives the switch from a
+            % flat datasheet number to a real SOC-dependent table.
+            R0scale = 1 + obj.R_spread * (rand(rs, S, 1) - 0.5);
 
             sys = bcp.Blocks.newSubsystem(model, 'Plant', [80 120 260 300]);
 
             core = bcp.Blocks.add(sys, 'MLFcn', 'Battery_standin', [300 80 500 260]);
-            bcp.Blocks.setMLFcn(core, obj.plantCode(soc0, R0, Ts_plant), Ts_plant);
+            bcp.Blocks.setMLFcn(core, obj.plantCode(soc0, R0scale, Ts_plant), Ts_plant);
             bcp.Blocks.assertPorts(core, 1, 4);
 
             p = bcp.Blocks.inport(sys, 'P_net', 1, [180 130 200 150]);
@@ -289,33 +315,49 @@ classdef Harness < handle
         end
 
         % -----------------------------------------------------------------
-        function s = plantCode(obj, soc0, R0, Ts_plant)
+        function s = plantCode(obj, soc0, R0scale, Ts_plant)
             spec = obj.Project.Pack;
-            % OCV: a generic high-power NMC curve. Generic, not measured -- and
-            % that is fine here, because nothing in the harness is a claim about
-            % a cell. It would not be fine in your real pack model.
-            %
-            % The bottom two breakpoints matter more than they look. An OCV
-            % table that stops at 2.80 V cannot reach a 2.45 V under-voltage
-            % trip no matter how hard you discharge it, because SOC clamps at
-            % zero first -- so the protection layer tests as unreachable and the
-            % whole under-voltage path goes unexercised. The cell's discharge
-            % cutoff IS the voltage at 0% SOC by definition, so the curve is
-            % carried down to 2.50 V through the knee at 2% SOC.
-            ocvSOC = [0.00 0.02 0.05 0.10 0.15 0.20 0.25 0.30 0.35 0.40 0.45 ...
-                      0.50 0.55 0.60 0.65 0.70 0.75 0.80 0.85 0.90 0.95 1.00];
-            ocvV   = [2.50 3.00 3.28 3.42 3.49 3.53 3.57 3.60 3.62 3.65 3.68 ...
-                      3.71 3.75 3.79 3.84 3.89 3.95 4.00 4.06 4.11 4.16 4.20];
+
+            if isempty(obj.CellTables)
+                % OCV: a generic high-power NMC curve. Generic, not measured --
+                % and that is fine when nothing in the run is a claim about a
+                % cell. It is not fine the moment you compare against Simscape;
+                % that is what the CellTables property is for.
+                %
+                % The bottom two breakpoints matter more than they look. An OCV
+                % table that stops at 2.80 V cannot reach a 2.45 V under-voltage
+                % trip no matter how hard you discharge it, because SOC clamps
+                % at zero first -- so the protection layer tests as unreachable
+                % and the whole under-voltage path goes unexercised. The cell's
+                % discharge cutoff IS the voltage at 0% SOC by definition, so
+                % the curve is carried down to 2.50 V through the knee at 2%.
+                ocvSOC = [0.00 0.02 0.05 0.10 0.15 0.20 0.25 0.30 0.35 0.40 0.45 ...
+                          0.50 0.55 0.60 0.65 0.70 0.75 0.80 0.85 0.90 0.95 1.00];
+                ocvV   = [2.50 3.00 3.28 3.42 3.49 3.53 3.57 3.60 3.62 3.65 3.68 ...
+                          3.71 3.75 3.79 3.84 3.89 3.95 4.00 4.06 4.11 4.16 4.20];
+                % A two-point table holding the flat datasheet number. Same code
+                % path as the real curve, so there is only one thing to be wrong.
+                r0SOC = [0.00 1.00];
+                r0TAB = (spec.Cell.R_dc_Ohm / spec.P) * [1 1];
+            else
+                ct     = obj.CellTables;
+                ocvSOC = ct.SOC;
+                ocvV   = ct.OCV_V;
+                r0SOC  = ct.SOC;
+                r0TAB  = ct.R0_Ohm / spec.P;   % P cells share the element current
+            end
 
             P = struct( ...
-                'Ts',      Ts_plant, ...
-                'S',       spec.S, ...
-                'Q_Ah',    spec.Cell.Q_Ah * spec.P, ...
-                'R0',      R0(:), ...
-                'SOC0',    soc0(:), ...
-                'OCV_SOC', ocvSOC(:), ...
-                'OCV_V',   ocvV(:), ...
-                'V_floor', max(spec.V_min * 0.5, 1));
+                'Ts',       Ts_plant, ...
+                'S',        spec.S, ...
+                'Q_Ah',     spec.Cell.Q_Ah * spec.P, ...
+                'R0_SOC',   r0SOC(:), ...
+                'R0_TAB',   r0TAB(:), ...
+                'R0_scale', R0scale(:), ...
+                'SOC0',     soc0(:), ...
+                'OCV_SOC',  ocvSOC(:), ...
+                'OCV_V',    ocvV(:), ...
+                'V_floor',  max(spec.V_min * 0.5, 1));
 
             s = sprintf([ ...
 'function [Vcell, SOCcell, Icell, V_pack] = fcn(P_net)\n' ...
