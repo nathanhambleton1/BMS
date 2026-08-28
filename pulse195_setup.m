@@ -34,12 +34,13 @@ function [p, ct] = pulse195_setup(varargin)
 %     Pass 'Period_s', 600 for the real timing. The pulse itself is never
 %     scaled: 2 s at 31250 W is the thing under test.
 %
-%   WHAT IS DELIBERATELY NOT THE AUTO-FILLED DEFAULT
-%     One threshold, I_dch_trip, and the reason is written at the point of
-%     change below. Everything else on this project comes from
-%     autofillAll() -- i.e. from the cell and the topology -- so it can be
-%     reproduced from the UI by choosing the cell, typing 195 and 1, and
-%     pressing Auto-fill all.
+%   EVERY THRESHOLD HERE IS AUTO-FILLED. THAT IS NEW, AND IT IS THE POINT
+%     This file used to override one of them, I_dch_trip, because a single
+%     discharge trip derived from the cell's CONTINUOUS rating fires on any
+%     pulse worth testing. Protection is now two-tiered -- see section 5 -- so
+%     the auto-filled values handle this load on their own and the override is
+%     gone. The whole project can be reproduced from the UI by choosing the
+%     cell, typing 195 and 1, and pressing Auto-fill all.
 
 opt = struct('Period_s',60, 'Pulse_s',2, 'P_load_W',31250, 'Start_s',5, 'Ts',0.01);
 for k = 1:2:numel(varargin)
@@ -95,29 +96,36 @@ p.Load = bcp.LoadSignal( ...
 p.Bms.Ts     = opt.Ts;
 p.Charger.Ts = opt.Ts;
 
-%% 5. The one threshold that is not auto-filled ----------------------------
-%  fromPack sets I_dch_trip to 1.10 x the cell's 45 A CONTINUOUS rating, which
-%  rounds to 50 A. That is the right default for a continuous load and the
-%  wrong one here, because this load is not continuous and the pack does not
-%  get to choose its current: 31250 W into a sagging pack is
+%% 5. Why the auto-filled discharge protection fits this pulse -------------
+%  This load is not continuous, and the pack does not get to choose its
+%  current: 31250 W into a sagging pack draws
 %
 %      I = (Voc - sqrt(Voc^2 - 4*R*P)) / (2*R)
 %
-%  which for these tables is 42.6 A at 100% SOC, 45.9 A at 95%, 48.9 A at 60%
-%  and 55.4 A at 20%. A 50 A trip therefore fires on the designed pulse
-%  anywhere below about 50% SOC -- the protection layer would be tripping on
-%  the experiment rather than on a fault.
+%  which for these tables is about 42.6 A at 100% SOC, 45.9 A at 95%, 48.9 A
+%  at 60% and 55.4 A at 20%. Against ONE trip at 1.10 x the cell's 45 A
+%  continuous rating -- 49.5 A -- the designed pulse fires protection anywhere
+%  below about 50% SOC. The protection layer would be tripping on the
+%  experiment rather than on a fault, which is why this file used to raise that
+%  trip to 60 A by hand.
 %
-%  60 A leaves 23% margin over the worst case inside the intended 60-100% SOC
-%  operating band, and still trips the pulse below about 13% SOC, which is
-%  where sag genuinely does start pulling cells toward the 2.45 V floor. It is
-%  above the cell's 45 A continuous rating on purpose: 45 A is a thermal limit
-%  over minutes, and this is 2 s at a 3% duty cycle.
+%  bcp.BmsConfig now stages over-current the way real protection does, in two
+%  tiers per direction:
 %
-%  This is a judgement about the application, not about the cell, which is
-%  exactly why auto-fill does not make it for you. Change it here and nowhere
-%  else.
-p.Bms.I_dch_trip = 60;
+%      49.5 A confirmed over t_i_cont_s = 10 s   the CONTINUOUS rating
+%      74.3 A confirmed over t_i_trip   = 0.1 s  the PULSE rating
+%
+%  A 2 s pulse at 55 A reaches neither: it is far too short to accumulate ten
+%  seconds of dwell, and far below the pulse tier. A 55 A load that did NOT
+%  stop would latch after ten seconds, which is correct -- 45 A continuous is a
+%  thermal limit over minutes, and this is 2 s at a 3% duty cycle. Below about
+%  5% SOC the sag drives the pulse current toward the fast tier, and by then
+%  the under-voltage trip is the one doing the work anyway.
+%
+%  So there is nothing to override here. The distinction between "briefly above
+%  the continuous rating" and "over-current" is now in the protection layer
+%  itself, where it belongs, instead of in a single threshold that had to be
+%  wrong in one direction or the other.
 
 p = p.sync();
 end

@@ -43,6 +43,15 @@ function [chg_enable, I_chg_limit, reason] = ...
 %     bug in the results. The latch clears only when SOC falls to SOC_restart,
 %     or when the highest cell falls below V_recharge.
 %
+%   THE CEILING IS AN OPERATING LIMIT, NOT A DERATED TRIP
+%     I_chg_limit is P.I_chg_max_A: the current the BMS permits, published
+%     straight through. It used to be the over-current TRIP scaled by a margin,
+%     which tied the charge rate to the fault threshold, meant raising the rate
+%     took edits in two blocks, and made it easy to end up commanding a current
+%     that fires your own protection. The trip is now derived FROM this limit
+%     in bcp.BmsConfig instead, so the two can only move together and only in
+%     the safe direction.
+%
 %   CONCURRENT CHARGING (P.AllowConcurrent)
 %     Off by default: charging is inhibited whenever the load is active. Turn it
 %     on to let the charger run through the load, derated to I_chg_headroom_A so
@@ -85,10 +94,10 @@ else
 end
 
 % ---- current ceiling ------------------------------------------------------
-%  Two independent ceilings, whichever is lower: the protection trip minus a
-%  margin (never command a current that trips your own over-current), and the
-%  concurrent-charging headroom when the load is running.
-lim = P.I_chg_trip * P.I_chg_margin;
+%  The configured charge rate, derated to the concurrent-charging headroom
+%  while the load is running so the sum of load and charge current stays inside
+%  the pack's limits.
+lim = P.I_chg_max_A;
 if loadActive > 0.5 && P.AllowConcurrent
     lim = min(lim, P.I_chg_headroom_A);
 end

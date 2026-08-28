@@ -71,9 +71,12 @@ it. The BMS computes pack voltage as `mean(V)*S` and pack current as `sum(I)/S`,
 which are correct for both layouts — so it does not need to know, but `S` does
 need to count the same thing the array counts.
 
-Simscape Battery blocks report current positive when *discharging*. This package
-is charge-positive throughout, and `I_sign` (default `−1`) is the single place
-that conversion happens.
+Simscape Battery components — everything Battery Model Builder generates
+included — declare their cell current *positive in*, which is positive while
+**charging**. This package is charge-positive throughout, so the two conventions
+already agree and `I_sign` defaults to `+1`. It is the single place a model with
+the opposite polarity gets converted. Check it once: pack current must read
+negative while the load is running.
 
 ## What is modeled
 
@@ -83,16 +86,30 @@ that conversion happens.
 - Per-cell arrays reduced to pack scalars, layout-agnostic
 - Dwell-confirmed, latching protection with hysteresis recovery: over- and
   under-voltage, over-current in both directions, over- and under-temperature
+- **Two-tier over-current per direction** — the cell's continuous rating
+  confirmed over a long dwell and its pulse rating over a short one, because one
+  threshold cannot honour both: set it at the continuous rating and every pulse
+  the pack was built for trips protection; set it at the pulse rating and a
+  sustained over-draw runs forever
 - **Directional inhibits** — over-voltage stops charging and leaves the discharge
   open, because the load is the cure; only over-current and over-temperature
   isolate the pack
 - Load-first arbitration with a configurable quiet dwell, SOC stop/restart
   hysteresis, a voltage re-arm threshold, and an opt-in concurrent-charging mode
 - Precharge / CC / CV charging with automatic handover, a CV loop that regulates
-  the **highest cell** rather than the pack average, clamping anti-windup, and
-  dwell-confirmed taper termination
+  the **highest cell** rather than the pack average, per-loop tracking
+  anti-windup for a bumpless handover, a hysteresis band and minimum dwell on
+  the reported mode, and dwell-confirmed taper termination keyed off the physics
+  rather than off the mode
+- **One number sets the charge rate.** `Bms.I_chg_max_A` is published to the
+  charger every sample; both charge over-current trips are derived from it, and
+  the charger's own settings are the *supply's* ratings. `p.setChargeCurrent(A)`
+  moves all of them together
 - Charge-parameter auto-fill from a cell datasheet plus S and P, including loop
   gains derived from the pack resistance
+- Cell-to-cell variation (`bcp.CellVariation`) written into any Simscape battery
+  pack in any model — initial SOC, capacity and resistance, seeded and exactly
+  revertible
 - A test harness with a resistive battery stand-in, for proving the blocks
   without a Simscape licence
 
@@ -110,9 +127,18 @@ evidence.
 
 **There is no thermal model.** With the temperature input off, the BMS holds
 25 °C and the over/under-temperature paths are present and demonstrably inert
-rather than pretending. That is also why auto-fill never uses a datasheet
-*maximum* charge current: those are qualified by a cell-temperature cutoff this
-package cannot enforce, so the default is always the standard charge.
+rather than pretending. That is why auto-fill defaults the charge *rate* to the
+datasheet standard charge and never to the maximum: maxima are qualified by a
+cell-temperature cutoff this package cannot enforce until a real temperature
+signal is wired in. The datasheet maximum is recorded and is the ceiling you may
+raise the rate to — deliberately, and `p.check()` says so when you do.
+
+**Pulse discharge ratings are estimates where the datasheet has none.** Molicel
+publishes a pulse figure for the P50B (75 A) and not for the P45B or P42A, where
+`I_dch_pulse_A` is 1.5x continuous by convention. That number is what the fast
+over-current tier is built on, so lower it if your duty cycle is not short. Each
+entry in `bcp.CellLibrary` marks which of its fields are datasheet and which are
+estimates.
 
 The harness plant is a resistive first-order stand-in with a generic NMC OCV
 curve. It is for testing the blocks, not for answering questions about a cell —
@@ -121,8 +147,8 @@ curve. It is for testing the blocks, not for answering questions about a cell �
 ## Tests
 
 ```matlab
-runtests('tBcpAlgorithms')   % 57 tests, seconds, no Simulink
-runtests('tBcpBuild')        %  8 tests, about a minute, builds and simulates
+runtests('tBcpAlgorithms')   % 61 tests, seconds, no Simulink
+runtests('tBcpBuild')        % 10 tests, about a minute, builds and simulates
 runtests('tBcpApp')          % 10 tests, UI wiring
 ```
 
@@ -157,10 +183,13 @@ BMS/
     |   |-- ChargerBuilder.m  builds the charger block into a model
     |   |-- Project.m         the four configs, kept consistent
     |   |-- Harness.m         the throwaway test model
+    |   |-- CellTables.m      the cell's real curves, read out of a generated .ssc
+    |   |-- CellVariation.m   cell-to-cell spread, applied to any pack in any model
     |   |-- Rate.m            sample-time audit and alignment
     |   `-- Blocks.m          library paths and wiring helpers
     |-- alg/                  the control laws, as testable plain functions
-    |-- app/bcpApp.m          the UI
+    |-- app/bcpSimple.m       the short UI: the numbers, then Copy models
+    |-- app/bcpApp.m          the full UI, every field of bcp.Project
     |-- tests/                algorithm, build and UI suites
     `-- configs/              saved configurations
 ```

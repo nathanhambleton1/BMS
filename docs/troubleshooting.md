@@ -58,6 +58,25 @@ traces.
 The three arrays are not the same width, which means one of them is wired to the
 wrong signal. `p.verifyWiring('myModel')` reports all three widths.
 
+### "Port width mismatch": something expected `[7]` and got `[10]`
+
+The BMS block's `pack_meas` output is **7** wide and its `diag` output is **10**.
+They are adjacent, unlabelled vectors leaving neighbouring ports, and wiring
+`diag` into the charger's `pack_meas` input is the easy mistake. The error is
+reported against the charger's input delay, whose initial condition is a
+7-element vector -- which is where the `[7]` comes from -- so the message names a
+block a long way from the wire that caused it.
+
+Draw `BMS/pack_meas` (output 5) into `Charger/pack_meas` (input 1). Better,
+never draw it at all: **Copy models** in `bcpSimple`, or `p.stageBlocks()` /
+`p.insertInto(model)`, brings both blocks across with all five BMS-to-charger
+lines already drawn.
+
+If the widths are wrong some other way: `bcp.Signals.NUM` and
+`bcp.Signals.DIAG_NUM` are the one place either is defined, and the generated
+`BMS_core` preallocates `diag` to `DIAG_NUM` so its width is fixed at compile
+time regardless of what is wired to the temperature port.
+
 ### The MATLAB Function block shows red text / "expected a scalar"
 
 Almost always the SOC array. If your model reports 0–100 rather than 0–1, tick
@@ -118,10 +137,14 @@ of *charging time* to go from 20% to 95%, and the load steals most of the clock.
 
 ### Every current has the wrong sign
 
-`I_sign` on the BMS tab. Simscape Battery blocks report current positive out of
-the positive terminal — positive when **discharging** — so the default is `−1`.
-The symptom is distinctive: the BMS over-current-trips during a charge and never
-trips during a discharge, and `state` reads CHARGE while the pack empties.
+`I_sign` on the BMS tab. Simscape Battery components declare cell current
+*positive in* — positive while **charging** — which is this package's own
+convention, so the default is `+1`. Set it to `-1` only for a model that reports
+discharge as positive.
+
+The symptom of getting it wrong is distinctive: the BMS over-current-trips
+during a **discharge** pulse, never trips during a charge, and `state` reads
+CHARGE while the pack empties.
 
 ### Pack voltage is P times too large, or currents are all scaled by a constant
 
@@ -153,8 +176,51 @@ Two candidates:
   so a 14S target left on a 20S pack stops the charge 26 V early. `sync()`
   rescales it when you change `S`, and `ChargerConfig.validate` warns if you set
   it by hand.
-- **`I_cc_A` is above what the BMS will permit.** The arbiter caps the charger at
-  `I_chg_trip × I_chg_margin`. `p.check()` reports this one.
+- **The supply is smaller than the rate the BMS permits.** `Charger.I_cc_A` and
+  `Charger.P_chg_max_W` are the *supply's* ratings, and the charger commands the
+  lower of them and the BMS limit. If either is below `Bms.I_chg_max_A × V_max`,
+  the supply is what ends the charge. `p.check()` reports both.
+
+### Raising the charge rate does nothing
+
+There is one number: **Charge current** in `bcpSimple`, `Bms.I_chg_max_A` in a
+script, or `I_CHG_MAX_A` at the top of the generated `BMS_core` block. Set it
+through `p.setChargeCurrent(A)` -- which is what the UI field calls -- and both
+charge over-current trips, the supply current rating and the supply power
+ceiling all move with it.
+
+Set `Bms.I_chg_max_A` on its own and the trips stay where they were, so a large
+enough increase fires protection instead of charging faster. `validate` rejects
+a trip below the permitted rate outright, and `p.check()` reports a supply that
+cannot source what the BMS is now permitting.
+
+Editing `I_CHG_MAX_A` inside a pasted block works, and the trips follow it
+because they are computed from it three lines down -- but the next `insert()`
+overwrites the block, so put the value you settle on back into
+`bcp.BmsConfig.I_chg_max_A`.
+
+### `chg_mode` toggles rapidly between CC and CV
+
+Fixed by the two-integrator rewrite of `bcp_charger`. If you still see it, you
+are running an older copy of `alg/bcp_charger.m`.
+
+The cause was a single PI integrator shared by the max-cell loop and the
+pack-voltage loop. Those two measure errors that differ by a factor of `S`, so
+around the knee -- where the `min()` selection alternates every sample -- the
+integrator was driven by two incompatible signals and the command oscillated
+between the current ceiling and well below it. The mode output followed, and
+because termination used to be keyed off `mode == 3`, the taper clock kept
+resetting: the charge could sit at its target indefinitely without finishing.
+
+Three changes, all in `bcp_charger`. Each loop has its own integrator. Both are
+back-calculated after the command is clamped, so every loop tracks what was
+actually applied and the handover is bumpless. And the mode output is a Schmitt
+trigger (`Mode_Hyst_frac`) with a minimum dwell (`t_mode_min_s`). Termination is
+now keyed off the current *and* the cell being within `V_term_band` of its
+target, never off the mode.
+
+`tBcpAlgorithms/modeDoesNotChatterAtTheKnee` and
+`tBcpBuild/chargerModeDoesNotChatterThroughTheKnee` are the regression tests.
 
 ### The charge ends at the CC–CV knee, with the pack nearly empty
 
@@ -190,7 +256,7 @@ it, say so when you report results: you have changed the load the pack sees.
 
 ## Behaviour that looks wrong and is not
 
-### `chg_mode` reads CV for the very first sample
+### `I_chg_cmd` is exactly zero on the very first sample
 
 By design. The charger's `pack_meas` delay is seeded with a full pack so that
 before its first real conversion it commands nothing — a charger whose first act
@@ -212,6 +278,46 @@ pack sags again. That limit cycle is the correct emergent behaviour of a pack
 being asked for more than it has, and it is what stops protection from
 deadlocking against its own load. If you want it to stop, the load is too big
 for the pack — which is the finding.
+
+### A discharge pulse goes above the discharge trip and nothing happens
+
+By design, and it is the point of staging over-current in two tiers.
+`I_dch_trip` is the cell's **continuous** rating, confirmed over `t_i_cont_s`
+(10 s by default); `I_dch_peak_A` is the **pulse** rating, confirmed over
+`t_i_trip` (0.1 s). A two-second pulse above the continuous rating reaches
+neither, which is correct -- a continuous rating is a thermal limit over
+minutes. The same current that does not stop latches after `t_i_cont_s`.
+
+Shorten `t_i_cont_s` if your load is meant to be continuous. Both tiers set the
+same fault bit, so nothing downstream has to know which one fired.
+
+### The pack's cells are all identical
+
+They are, unless you have asked otherwise. Two separate reasons:
+
+- **No spread has been applied.** `bcp.CellVariation` writes initial SOC,
+  capacity and resistance spread into any Simscape battery pack, in any model:
+
+  ```matlab
+  v = bcp.CellVariation('SOC_spread_pct',2, 'R_spread_pct',10, 'Seed',7);
+  v.apply('myBatteryModel')     % v.revert() puts every parameter back
+  ```
+
+  It is also the **Apply to pack** button under Additional settings in
+  `bcpSimple`.
+
+- **The pack is built at Lumped model resolution**, which is Battery Model
+  Builder's default. A lumped Module contains *one* cell model standing in for
+  all `S*P` cells, with equations forcing every parallel assembly to the same
+  voltage and SOC -- there is no per-cell state to vary. `apply()` counts what
+  it found and tells you which case you are in. Variation goes in per component
+  instance, so on a lumped pack it is module-to-module spread; rebuild at
+  Detailed resolution for genuine cell-to-cell spread.
+
+Spread matters more than it looks: without it, min, mean and max cell voltage
+are the same number, a per-cell CV loop is indistinguishable from a
+pack-voltage one, and the per-cell over-voltage trip is unreachable. Whole
+classes of bug test as passing.
 
 ### Temperature protection never fires
 

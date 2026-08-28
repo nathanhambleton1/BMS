@@ -43,16 +43,22 @@ function [Vcell, SOCcell, Icell, V_pack] = bcp_harness_plant(P_net, P)
 %   OUTPUTS
 %     Vcell   Sx1  element terminal voltage [V]
 %     SOCcell Sx1  element state of charge, 0..1
-%     Icell   Sx1  element current [A], DISCHARGE-POSITIVE (see below)
+%     Icell   Sx1  element current [A], CHARGE-POSITIVE (see below)
 %     V_pack  1x1  pack terminal voltage [V]
 %
-%   Icell IS DISCHARGE-POSITIVE ON PURPOSE
+%   Icell IS CHARGE-POSITIVE, MATCHING SIMSCAPE BATTERY
 %     A pack model's current array polarity is the single easiest thing to get
 %     backwards, and bcp.BmsConfig.I_sign is the one place it is converted. The
-%     harness emits the discharge-positive convention that I_sign = -1 expects,
-%     so that a sign error in the default configuration shows up here instead
-%     of in your real model. Check your own pack against a known discharge
-%     before trusting either sign -- bcp_pack_monitor says why.
+%     harness emits the same polarity a Simscape Battery pack does -- those
+%     components declare their cell current "positive in", which is positive
+%     while charging -- so the package default of I_sign = +1 is correct for
+%     both, and a harness run exercises the same sign path your real model will.
+%
+%     This used to emit discharge-positive to match a default of -1, and the
+%     default was simply wrong: on a real Battery Model Builder pack it made the
+%     BMS read a large positive current during a discharge pulse and latch an
+%     over-current-CHARGE fault. Check your own pack against a known discharge
+%     anyway -- bcp_pack_monitor says how.
 
 persistent soc V_prev initialised
 
@@ -88,5 +94,5 @@ V_pack = sum(Vcell);
 V_prev = V_pack;
 
 SOCcell = soc;
-Icell   = -I_pack * ones(S,1);                   % discharge-positive, see header
+Icell   = I_pack * ones(S,1);                    % charge-positive, see header
 end

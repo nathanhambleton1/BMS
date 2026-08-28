@@ -12,6 +12,19 @@ classdef ChargerConfig
 %   and the series/parallel counts. Deriving them is reproducible; typing them
 %   into eight fields is how a 14S pack ends up with a 4.2 V CV target.
 %
+%   THE BMS OWNS THE CHARGE RATE. I_cc_A IS THIS SUPPLY'S OWN RATING.
+%     bcp_charger charges at min(I_cc_A, I_limit), and I_limit is what the BMS
+%     publishes from bcp.BmsConfig.I_chg_max_A. So I_cc_A is the biggest
+%     current this power supply can source -- a hardware fact -- and the rate
+%     you actually charge at is one number in the BMS. Auto-fill sets I_cc_A to
+%     the pack's datasheet MAXIMUM charge current for exactly that reason: the
+%     supply should not be the thing quietly limiting a test.
+%
+%     P_chg_max_W is the same kind of number, and it used to be the other half
+%     of the problem -- a power ceiling sized for the default current, which
+%     clipped any raised charge rate a second time, in a second block. It is
+%     now derived from I_cc_A.
+%
 %   CC AND CV ARE NOT MODES YOU SELECT
 %     There is no mode switch. One PI loop runs against two voltage targets and
 %     a current ceiling, and the mode output reports which of them is currently
@@ -36,10 +49,14 @@ classdef ChargerConfig
         SeriesCount double = 14   % needed to convert the per-cell CV target
 
         % --- current -----------------------------------------------------------
-        I_cc_A       double = 21.75  % constant-current setpoint [A]
+        I_cc_A       double = 67.5   % SUPPLY current rating [A] -- not the charge rate
+        %  The charge rate lives in bcp.BmsConfig.I_chg_max_A and reaches this
+        %  block on the I_limit input. This is the ceiling the hardware itself
+        %  imposes; the lower of the two binds, every sample.
+
         I_taper_A    double = 1.125  % terminate when the command tapers below this [A]
         I_precharge_A double = 2.25  % trickle for a deeply discharged pack [A]
-        P_chg_max_W  double = 1300   % supply power ceiling [W]
+        P_chg_max_W  double = 3969   % supply power ceiling [W]
 
         % --- voltage -----------------------------------------------------------
         V_cv_cell double = 4.20   % CV target for the HIGHEST cell [V]
@@ -59,6 +76,25 @@ classdef ChargerConfig
 
         % --- termination --------------------------------------------------------
         t_term_s double = 2.0   % taper must hold this long to terminate [s]
+
+        V_term_band double = 0.03
+        %  How close to the CV target the highest cell must be before a small
+        %  command counts as a taper rather than as a derated CC. Termination is
+        %  keyed off this and the current, never off the reported mode -- see
+        %  bcp_charger for why that distinction is load-bearing.
+
+        % --- mode reporting hysteresis ------------------------------------------
+        Mode_Hyst_frac double = 0.03
+        %  The command must fall this fraction of the current ceiling below it
+        %  before the mode output switches from CC to CV, and come back within a
+        %  quarter of that band to switch back. Without it the mode toggles every
+        %  sample while the command sits on the ceiling, which is the rapid
+        %  CC/CV toggling a charge at the knee otherwise shows.
+
+        t_mode_min_s double = 0.25
+        %  Minimum time in a mode before it may change again. Belt and braces
+        %  with the hysteresis band: the band stops chatter driven by the
+        %  command, this stops chatter driven by a moving ceiling.
 
         % --- debugging ----------------------------------------------------------
         ForceMode double = 0
@@ -112,6 +148,16 @@ classdef ChargerConfig
                 obj.t_term_s, obj.Ts);
             assert(any(obj.ForceMode == [0 2]), 'bcp:ChargerConfig:ForceMode', ...
                 'ForceMode must be 0 (automatic) or 2 (pin to CC).');
+            assert(obj.P_chg_max_W > 0, 'bcp:ChargerConfig:Pmax', ...
+                'P_chg_max_W must be positive.');
+            assert(obj.V_term_band > 0, 'bcp:ChargerConfig:TermBand', ...
+                'V_term_band must be positive.');
+            assert(obj.Mode_Hyst_frac > 0 && obj.Mode_Hyst_frac < 1, ...
+                'bcp:ChargerConfig:ModeHyst', ...
+                ['Mode_Hyst_frac must lie in (0,1). Zero is what makes the mode ', ...
+                 'output toggle every sample at the CC-CV knee.']);
+            assert(obj.t_mode_min_s >= 0, 'bcp:ChargerConfig:ModeDwell', ...
+                't_mode_min_s must be >= 0.');
 
             % A pack CV target that is not S times the cell target means one of
             % the two loops can never bind, which makes half the controller dead
@@ -143,6 +189,9 @@ classdef ChargerConfig
                 'Kp_pack',          obj.Kp_pack, ...
                 'Ki_pack',          obj.Ki_pack, ...
                 't_term_s',         obj.t_term_s, ...
+                'V_term_band',      obj.V_term_band, ...
+                'Mode_Hyst_frac',   obj.Mode_Hyst_frac, ...
+                't_mode_min_s',     obj.t_mode_min_s, ...
                 'ForceMode',        obj.ForceMode);
         end
 
@@ -167,8 +216,9 @@ classdef ChargerConfig
             if ~isempty(obj.DerivedFrom)
                 fprintf('     auto-filled from %s\n', obj.DerivedFrom);
             end
-            fprintf('     CC  %.2f A   ->  CV %.3f V/cell (%.2f V pack)\n', ...
-                obj.I_cc_A, obj.V_cv_cell, obj.V_cv_pack);
+            fprintf('     supply rating %.2f A / %.0f W  ->  CV %.3f V/cell (%.2f V pack)\n', ...
+                obj.I_cc_A, obj.P_chg_max_W, obj.V_cv_cell, obj.V_cv_pack);
+            fprintf('     the charge RATE arrives from the BMS on I_limit, not from here\n');
             fprintf('     terminate below %.2f A held for %.1f s;  re-arm below %.2f V/cell\n', ...
                 obj.I_taper_A, obj.t_term_s, obj.V_recharge_cell);
             fprintf('     precharge %.2f A while any cell is under %.2f V\n', ...
@@ -190,11 +240,15 @@ classdef ChargerConfig
         %   obj = bcp.ChargerConfig.fromPack(spec, 'C_rate', 0.5, 'Ts', 0.005)
         %
         %   NAME-VALUE OPTIONS
-        %     C_rate     charge current as a multiple of pack capacity. Default
-        %                is the cell's own datasheet standard charge, which for
-        %                the Molicel P-series is about 1C.
+        %     C_rate     SUPPLY current rating as a multiple of pack capacity.
+        %                Default is the pack's datasheet MAXIMUM charge current,
+        %                because this field is what the hardware can source, not
+        %                the rate you intend to charge at -- that lives in
+        %                bcp.BmsConfig.I_chg_max_A and arrives on I_limit. Use
+        %                this option to model a smaller supply.
         %     Taper_C    termination current as a C-rate. Default C/20, the
-        %                usual CC-CV termination criterion.
+        %                usual CC-CV termination criterion. The cell's own
+        %                datasheet figure, where it has one, is spec.I_term_A.
         %     Ts         sample period [s]. Default 0.01.
         %     Tau_cv_s   closed-loop time constant of the CV loop [s]. Default
         %                0.5. Raise it if the CV handover rings.
@@ -213,11 +267,19 @@ classdef ChargerConfig
         %     which is why the two loops reach their targets together instead of
         %     fighting.
         %
-        %   WHAT THIS DOES NOT KNOW
-        %     Temperature. Molicel's high maximum charge currents are qualified
-        %     by a cell-temperature cutoff, and this package has no thermal
-        %     model, so the default is the STANDARD charge current, never the
-        %     maximum. Ask for a higher C_rate explicitly if you mean it.
+        %   WHY THE SUPPLY IS SIZED AT THE PACK MAXIMUM AND THE RATE IS NOT
+        %     Sizing I_cc_A at the standard charge current, as this used to,
+        %     made the supply a second and invisible limit on the charge rate:
+        %     raising bcp.BmsConfig.I_chg_max_A changed nothing until you also
+        %     found this field and P_chg_max_W. Both are now the hardware's
+        %     rating, so the BMS limit is the only thing that binds.
+        %
+        %     That is not permission to charge at the pack maximum. It is the
+        %     BMS, not the supply, that decides -- and bcp.BmsConfig defaults
+        %     the rate to the datasheet STANDARD charge, because the maximum is
+        %     qualified by a cell-temperature cutoff this package cannot enforce
+        %     until UseTemperature is on and a real temperature signal is wired
+        %     in.
             arguments
                 spec (1,1) bcp.PackSpec
             end
@@ -237,9 +299,9 @@ classdef ChargerConfig
 
             % --- current ---------------------------------------------------
             if isempty(opt.C_rate)
-                I_cc  = spec.I_chg_std_A;
-                howI  = sprintf('%.1f A datasheet standard charge (%.2fC)', ...
-                                I_cc, c.C_rate_chg());
+                I_cc  = spec.I_chg_max_A;
+                howI  = sprintf('%.1f A supply rating = the pack datasheet maximum (%.2fC)', ...
+                                I_cc, c.C_rate_chg_max());
             else
                 I_cc  = opt.C_rate * spec.Q_Ah;
                 howI  = sprintf('%.2fC = %.1f A', opt.C_rate, I_cc);

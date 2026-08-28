@@ -63,6 +63,49 @@ classdef Project
         end
 
         % -----------------------------------------------------------------
+        function obj = setChargeCurrent(obj, I_A)
+        %SETCHARGECURRENT  Change the charge rate. One call, whole system.
+        %
+        %   p = p.setChargeCurrent(13.5)     % amps at the pack terminals
+        %
+        %   THIS IS THE ONLY THING YOU SHOULD HAVE TO CHANGE TO CHARGE FASTER.
+        %   It used to take five: the charger's I_cc_A and P_chg_max_W, the
+        %   BMS's I_chg_trip and I_chg_margin, and sometimes I_precharge_A --
+        %   spread across two generated blocks, with no error if you missed one,
+        %   just a charge that quietly stayed at the old rate.
+        %
+        %   What it sets:
+        %     Bms.I_chg_max_A   the rate itself, published to the charger
+        %     Bms.I_chg_trip    sustained over-current trip, OC_trip_margin above it
+        %     Bms.I_chg_peak_A  fast over-current trip, OC_peak_margin above it
+        %     Charger.I_cc_A    raised if this supply could not source the rate
+        %     Charger.P_chg_max_W  raised to match, so the power ceiling cannot
+        %                       clip the new current
+        %     Charger.I_precharge_A  clamped to stay at or below I_cc_A
+        %
+        %   Protection is not weakened: the trips move WITH the operating point
+        %   and keep the same relationship to it. What it does do is let you ask
+        %   for a rate the cell cannot take, so check() compares the result
+        %   against the pack's datasheet maximum and says so.
+            arguments
+                obj
+                I_A (1,1) double {mustBePositive}
+            end
+            obj.Bms = obj.Bms.setChargeLimit(I_A);
+
+            % The supply must be able to source what the BMS now permits, or
+            % the rate change silently does nothing.
+            if obj.Charger.I_cc_A < I_A
+                obj.Charger.I_cc_A = I_A;
+            end
+            obj.Charger.P_chg_max_W = max(obj.Charger.P_chg_max_W, ...
+                                          obj.Charger.I_cc_A * obj.Pack.V_max);
+            obj.Charger.I_precharge_A = min(obj.Charger.I_precharge_A, ...
+                                            obj.Charger.I_cc_A);
+            obj = obj.sync();
+        end
+
+        % -----------------------------------------------------------------
         function obj = autofillCharger(obj, varargin)
         %AUTOFILLCHARGER  Re-derive only the charge parameters.
         %
@@ -118,18 +161,33 @@ classdef Project
             issues = {};
             p = obj.Pack; b = obj.Bms; c = obj.Charger; L = obj.Load;
 
-            if c.I_cc_A > b.I_chg_trip * b.I_chg_margin + 1e-9
+            if b.I_chg_max_A > c.I_cc_A + 1e-9
                 issues{end+1} = sprintf( ...
-                    ['Charger CC is %.2f A but the BMS will only permit %.2f A ', ...
-                     '(%.0f%% of the %.1f A trip). The charge will be derated and ', ...
-                     'never reach CC. Lower I_cc_A or raise I_chg_trip.'], ...
-                    c.I_cc_A, b.I_chg_trip*b.I_chg_margin, b.I_chg_margin*100, ...
-                    b.I_chg_trip);
+                    ['The BMS permits %.2f A of charge but the supply is only rated ', ...
+                     'for %.2f A, so the supply is what limits this charge. Raise ', ...
+                     'Charger.I_cc_A, or go through p.setChargeCurrent(), which ', ...
+                     'moves both.'], b.I_chg_max_A, c.I_cc_A);
             end
-            if c.I_cc_A > p.I_chg_max_A + 1e-9
+            if b.I_chg_max_A * p.V_max > c.P_chg_max_W + 1e-9
                 issues{end+1} = sprintf( ...
-                    ['Charger CC is %.2f A, above the %.1f A datasheet maximum for ', ...
-                     '%s %dS%dP.'], c.I_cc_A, p.I_chg_max_A, p.Cell.Name, p.S, p.P);
+                    ['The %.0f W supply power ceiling binds before the %.2f A current ', ...
+                     'limit does (%.2f A at the %.1f V full-pack voltage needs ', ...
+                     '%.0f W). The charge will taper for a reason that is not the ', ...
+                     'cell.'], c.P_chg_max_W, b.I_chg_max_A, b.I_chg_max_A, ...
+                    p.V_max, b.I_chg_max_A * p.V_max);
+            end
+            if b.I_chg_max_A > p.I_chg_max_A + 1e-9
+                issues{end+1} = sprintf( ...
+                    ['The BMS permits %.2f A of charge, above the %.1f A datasheet ', ...
+                     'maximum for %s %dS%dP.'], b.I_chg_max_A, p.I_chg_max_A, ...
+                    p.Cell.Name, p.S, p.P);
+            elseif b.I_chg_max_A > p.I_chg_std_A + 1e-9 && ~b.UseTemperature
+                issues{end+1} = sprintf( ...
+                    ['Charging at %.2f A is above the %.1f A datasheet standard ', ...
+                     'charge and the BMS has no temperature input, so the cutoff ', ...
+                     'the datasheet qualifies that rate with is not being enforced. ', ...
+                     'Legal in simulation; say so when you report the result.'], ...
+                    b.I_chg_max_A, p.I_chg_std_A);
             end
             if c.V_cv_cell <= b.V_ov_trip && b.V_ov_trip - c.V_cv_cell < 0.02
                 issues{end+1} = sprintf( ...
@@ -152,12 +210,25 @@ classdef Project
             end
 
             peakI = L.peakDemand() / max(p.V_min, 1);
-            if peakI > b.I_dch_trip
+            if peakI > b.I_dch_peak_A
                 issues{end+1} = sprintf( ...
                     ['The load peaks at %.0f W, about %.0f A at the empty-pack voltage ', ...
-                     'of %.1f V. That is above the %.0f A discharge trip, so the load ', ...
-                     'will fault the pack out rather than test it.'], ...
-                    L.peakDemand(), peakI, p.V_min, b.I_dch_trip);
+                     'of %.1f V. That is above the %.0f A FAST discharge trip, which ', ...
+                     'confirms in %.2f s, so the load will fault the pack out rather ', ...
+                     'than test it.'], ...
+                    L.peakDemand(), peakI, p.V_min, b.I_dch_peak_A, b.t_i_trip);
+            elseif peakI > b.I_dch_trip
+                pulseLen = 0;
+                if strcmp(L.Waveform,'pulse') && L.Pulse_Frequency_Hz > 0
+                    pulseLen = (L.Pulse_Duty_pct/100) / L.Pulse_Frequency_Hz;
+                end
+                if pulseLen >= b.t_i_cont_s || ~strcmp(L.Waveform,'pulse')
+                    issues{end+1} = sprintf( ...
+                        ['The load draws about %.0f A, above the %.0f A sustained ', ...
+                         'discharge trip, for longer than the %.1f s that trip ', ...
+                         'confirms over. It will latch.'], ...
+                        peakI, b.I_dch_trip, b.t_i_cont_s);
+                end
             end
             if L.peakDemand() > p.P_dch_W
                 issues{end+1} = sprintf( ...
@@ -212,8 +283,13 @@ classdef Project
             fprintf('Load: %s -- peak %.0f W, mean %.0f W, clamp [%.0f %.0f] W\n', ...
                 obj.Load.Waveform, obj.Load.peakDemand(), obj.Load.meanDemand(), ...
                 obj.Load.Pmin_W, obj.Load.Pmax_W);
-            t = obj.Charger.estimatedChargeTime_h(obj.Pack) * 3600;
-            fprintf('      CC-phase charge time from 20%% to 95%%: about %.0f s ', t);
+            % Computed from the current that will actually flow -- the lower
+            % of what the BMS permits and what the supply can source.
+            t = (0.95 - 0.20) * obj.Pack.Q_Ah / obj.chargeCurrent() * 3600;
+            fprintf('Charge rate: %.2f A permitted by the BMS, %.2f A supply rating\n', ...
+                obj.Bms.I_chg_max_A, obj.Charger.I_cc_A);
+            fprintf('      CC-phase charge time from 20%% to 95%% at %.2f A: about %.0f s ', ...
+                obj.chargeCurrent(), t);
             fprintf('(ignores the CV taper and any time the load steals)\n');
 
             issues = obj.check();
@@ -226,6 +302,84 @@ classdef Project
                 end
                 fprintf('\n');
             end
+        end
+
+        % -----------------------------------------------------------------
+        function I = chargeCurrent(obj)
+        %CHARGECURRENT  The charge current this configuration will actually reach [A].
+        %
+        %   The BMS permits I_chg_max_A and the supply can source I_cc_A. The
+        %   lower binds, and it is the lower one that every estimate here should
+        %   be computed from -- reporting a charge time against a rate the
+        %   hardware cannot deliver is how a run that behaved correctly looks
+        %   like a failure.
+            I = min(obj.Bms.I_chg_max_A, obj.Charger.I_cc_A);
+        end
+
+        % -----------------------------------------------------------------
+        function model = stageBlocks(obj, modelName)
+        %STAGEBLOCKS  Put both blocks, already wired to each other, in a scratch
+        %   model, open it and select them -- ready for Ctrl+C.
+        %
+        %   model = p.stageBlocks()                 % 'bcp_blocks'
+        %   model = p.stageBlocks('my_scratch')
+        %
+        %   This is the copy half of "copy the blocks into my own simulation".
+        %   The paste half is Ctrl+V in your model, or p.insertInto(yourModel)
+        %   if you would rather not leave MATLAB.
+        %
+        %   THE FIVE INTERNAL LINES COME WITH THEM, AND THAT IS THE POINT
+        %     The BMS and charger talk to each other over five wires, three of
+        %     which carry a vector or a limit that looks like any other number
+        %     on the canvas. Copying the blocks separately and redrawing those by
+        %     hand is where the diag output (10 wide) gets wired into the
+        %     charger's pack_meas input (7 wide) and Simulink reports a width
+        %     mismatch on a port neither block is really about. Copied as a pair,
+        %     with the lines already drawn, there is nothing to get wrong: the
+        %     only wires left are the ones to your battery and your load.
+            if nargin < 2 || isempty(modelName), modelName = 'bcp_blocks'; end
+            modelName = char(modelName);
+
+            if bdIsLoaded(modelName), close_system(modelName, 0); end
+            new_system(modelName);
+            open_system(modelName);
+
+            % A staging model is never simulated, but it still has to COMPILE
+            % when it is pasted somewhere, and the blocks pin their own rates.
+            % Matching the solver here means bcp.Rate.assertCompatible passes
+            % during the insert instead of refusing it.
+            set_param(modelName, 'SolverType','Fixed-step', ...
+                      'Solver','FixedStepDiscrete', ...
+                      'FixedStep', num2str(min(obj.Bms.Ts, obj.Charger.Ts), '%.12g'));
+
+            paths = obj.insertInto(modelName, ...
+                'BmsPosition',     [120  80 320 360], ...
+                'ChargerPosition', [120 420 320 580]);
+
+            try
+                Simulink.BlockDiagram.arrangeSystem(modelName);
+            catch
+                % Cosmetic. Never fail a build over the auto-layout.
+            end
+
+            % Select the two blocks so Ctrl+C picks them up. Only the blocks --
+            % a block_diagram has no Selected parameter of its own, and asking
+            % for one is an error rather than a no-op.
+            for f = {paths.bms, paths.charger}
+                if ~isempty(f{1}) && getSimulinkBlockHandle(f{1}) > 0
+                    set_param(f{1}, 'Selected', 'on');
+                end
+            end
+
+            fprintf('\n[bcp] Both blocks are staged and selected in "%s".\n', modelName);
+            fprintf('      Ctrl+C here, then Ctrl+V in your own model.\n');
+            fprintf(['      The five BMS <-> charger lines come with them. What is ', ...
+                     'left to draw\n      is your battery into the BMS, and the ', ...
+                     'BMS load command out to your load.\n']);
+            fprintf(['      bcp_setup must be on the MATLAB path in whichever ', ...
+                     'session runs your\n      model, or the blocks will not ', ...
+                     'compile.\n\n']);
+            model = modelName;
         end
 
         % -----------------------------------------------------------------

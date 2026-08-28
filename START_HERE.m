@@ -138,12 +138,16 @@ end
 if LAUNCH_UI && SIMPLE_UI
     fprintf('\n[4/4] Opening the short UI...\n');
     app = bcpSimple(); %#ok<NASGU>  keep the handle alive in the base workspace
-    fprintf('      Done. Set the numbers top to bottom, then press Run.\n\n');
+    fprintf('      Done. Set the numbers top to bottom, then press Copy\n');
+    fprintf('      models to put the BMS and charger into your own simulation.\n\n');
     fprintf('      The line under each group says what your numbers mean for\n');
     fprintf('      this pack -- the current the pulse will really draw, the SOC\n');
     fprintf('      it costs, and whether the gap is long enough to put it back.\n');
     fprintf('      They update as you type, so a load the pack cannot deliver\n');
     fprintf('      shows up before you spend a run finding out.\n\n');
+    fprintf('      Additional settings holds the built-in test harness (run it\n');
+    fprintf('      before you copy, to check the configuration in a second) and\n');
+    fprintf('      the cell-variation tool.\n\n');
     fprintf('      Every field:      bcpApp\n');
     fprintf('      The whole test:   RUN_PULSE_TEST\n\n');
 elseif LAUNCH_UI

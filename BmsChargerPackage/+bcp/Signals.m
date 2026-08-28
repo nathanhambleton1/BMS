@@ -19,6 +19,14 @@ classdef Signals
         SOC_MAX  = 6    % highest cell SOC [0..1]
         I_PACK   = 7    % pack current [A], CHARGE-POSITIVE
         NUM      = 7
+
+        DIAG_NUM = 10   % elements in the BMS block's diag output
+        %  The single definition of that width. The generated BMS_core
+        %  preallocates diag to exactly this, and everything that unpacks it
+        %  reads the number from here rather than writing 10 again -- because a
+        %  width written down twice is a width that will disagree with itself,
+        %  and the symptom is a Simulink port mismatch reported against whatever
+        %  the wire happens to reach.
     end
 
     methods (Static)

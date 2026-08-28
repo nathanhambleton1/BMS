@@ -38,11 +38,20 @@ function meas = bcp_pack_monitor(Vcell, SOCcell, Icell, P)
 %
 %   SIGN CONVENTION
 %     P.I_sign converts your battery model's current polarity to this
-%     package's charge-positive convention. Simscape Battery blocks report
-%     current positive out of the positive terminal -- i.e. positive when
-%     DISCHARGING -- so the default is -1. Get this wrong and the BMS will
-%     over-current-trip on a charge and never trip on a discharge. Check it
-%     once against a known discharge, then leave it alone.
+%     package's charge-positive convention.
+%
+%     The default is +1, and that is what a Simscape Battery pack needs. Those
+%     components -- everything the Battery Model Builder generates included --
+%     declare their cell current "positive in", meaning positive current flows
+%     INTO the positive terminal, which is what happens while the cell is
+%     CHARGING. The two conventions already agree, so nothing is flipped.
+%
+%     Get it wrong and the failure is loud but misleading: the BMS reads a
+%     large POSITIVE current during a discharge pulse, latches an
+%     over-current-CHARGE fault within the confirmation window, opens the
+%     contactor part-way through the first pulse, and never trips on a real
+%     discharge at all. Check it once -- pack current must read NEGATIVE while
+%     the load is running -- and then leave it alone.
 
 Vmean = mean(Vcell);
 Vmin  = min(Vcell);

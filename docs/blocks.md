@@ -79,6 +79,21 @@ Defined in one place, `bcp.Signals`. `bcp.Signals.describe()` prints it.
 disagree, protection is holding the load off, and `arb_reason` says what the
 charger is doing about it.
 
+### The two vector outputs are 7 and 10 wide, and they sit next to each other
+
+`pack_meas` (output 5) is 7 wide and goes to the charger. `diag` (output 9) is
+10 wide and goes to a scope. Wiring `diag` where `pack_meas` belongs is the easy
+mistake, and the error Simulink reports is a width mismatch against the
+*charger's* input delay — "expected `[7]`, got `[10]`" — which names a block a
+long way from the wire that caused it.
+
+`bcp.Signals.NUM` and `bcp.Signals.DIAG_NUM` are the single definition of each
+width, and the generated `BMS_core` preallocates `diag` to `DIAG_NUM` so its
+width is a compile-time constant whatever is wired to the temperature port. The
+reliable way to avoid the question entirely is to copy both blocks together —
+`p.stageBlocks()`, `p.insertInto(model)`, or **Copy models** in `bcpSimple` —
+which brings all five internal lines pre-drawn.
+
 ### Fault bits
 
 | Bit | Value | Fault | Effect |
@@ -91,6 +106,20 @@ charger is doing about it.
 | 6 | 32 | under-temperature while charging | inhibits **charging** only |
 
 `bcp.Signals.faultBits(mask)` turns the number into words.
+
+**Over-current is two tiers sharing one bit.** A cell has two current ratings and
+one threshold cannot honour both: set it at the continuous rating and every
+pulse the pack was built to deliver fires protection; set it at the pulse rating
+and a sustained over-draw runs forever. So each direction has
+
+| Tier | Threshold | Confirmed over | What it catches |
+|---|---|---|---|
+| sustained | `I_dch_trip` / `I_chg_trip` | `t_i_cont_s` (10 s) | the continuous rating, exceeded for long enough to matter |
+| fast | `I_dch_peak_A` / `I_chg_peak_A` | `t_i_trip` (0.1 s) | the pulse rating, i.e. a genuine fault |
+
+Either latches the same bit, because the consequence is the same. This is how
+protection ICs stage over-current, and it is why a pulse test does not need its
+discharge trip raised by hand to run.
 
 **Directional inhibits, not one big contactor.** A cell over-voltage means stop
 charging; it does not mean stop discharging, because discharging is the cure.
@@ -156,12 +185,18 @@ runs during a pulse because each one thought the other had yielded.
 
 ## Why CC and CV are not modes you select
 
-There is no mode switch on the charger. One PI loop runs against two voltage
+There is no mode switch on the charger. Two PI loops run against two voltage
 targets and a current ceiling, and `mode` reports which constraint is currently
 binding: at the ceiling is CC, below it is CV. The handover is automatic because
 it is not a decision — it is which constraint is active.
 
-Two details in that loop are load-bearing.
+**Nor is the charge rate set here.** `I_limit` from the BMS and this block's own
+`I_cc_A` are two ceilings and the lower binds, and `I_cc_A` is the *supply's*
+rating. So the rate is one number — `Bms.I_chg_max_A` — with the two charge
+over-current trips derived from it, and there is nothing in the charger to keep
+in step.
+
+Four details in those loops are load-bearing.
 
 **The CV loop regulates the highest cell, not the pack voltage.** On a pack with
 real cell-to-cell spread those are different problems. Pack-voltage CV will
@@ -171,21 +206,43 @@ charge controller destroys cells — first in simulation, then in hardware. The
 loop takes the lower of the two commands: the one holding the maximum cell at
 `V_cv_cell`, and the one holding the pack at `V_cv_pack`.
 
-**Termination is dwell-confirmed, and that is not optional.** `Kp` is large by
-design, so the proportional term saturates for any error above a few tens of
-millivolts, and clamping anti-windup holds the integrator at zero through the
-whole CC phase. The instant the highest cell reaches the target the error
-collapses to nearly zero and, with the integrator still empty, the command dips
-to near zero before integral action winds it up to the true CV equilibrium.
-Terminate on that dip and every charge ends at the CC–CV knee: the phase
-sequence looks perfect on a scope and the pack is nowhere near full. Confirming
-the taper over `t_term_s` rides through the transient, because a genuine taper
-persists and the transient does not.
+**Two loops means two integrators, each tracking what was applied.** They used
+to share one, and that is what made the charger limit-cycle at the knee: the two
+loops measure errors differing by a factor of `S`, so whichever lost the `min()`
+selection last was still writing the state the winner read, and around the knee
+the selection alternates every sample. Each loop now has its own state, and
+after the command is clamped both are back-calculated so that each loop's own
+output equals what was actually applied:
 
-The taper clock also requires `mode == 3` and resets when `enable` drops. A CC
-phase derated by `I_limit` can sit below `I_taper_A` without being a taper, and
-a charge paused by the load spends that time at zero current, which is not one
-either.
+```
+x_k = (I_cmd - Kp_k * e_k) / Ki_k
+```
+
+For the loop that is running and unsaturated this is the identity, so integral
+action is untouched. For the loop that lost, and for either loop sitting on a
+limit, it is exact tracking anti-windup: no wind-up through the CC phase, and a
+bumpless handover whenever the binding constraint changes.
+
+**`mode` is a Schmitt trigger with a minimum dwell.** Entering CV needs the
+command to fall `Mode_Hyst_frac` below the ceiling; returning to CC needs it
+back within a quarter of that band; and either change waits out `t_mode_min_s`.
+A bare comparison against the ceiling toggles every sample while the command
+sits on it, and a report that chatters is a report nobody can read.
+
+**Termination is dwell-confirmed, and does not depend on the mode.** A taper is
+"the command has fallen away *because* the voltage target is satisfied", so that
+is what is tested: the command below `I_taper_A` while the highest cell is
+within `V_term_band` of its target. Keying it off `mode == 3` made the
+termination clock hostage to the mode, and a charge could sit at its target
+indefinitely without ever accumulating a confirmed taper.
+
+The confirmation over `t_term_s` is not optional either. `Kp` is large by design,
+so the command dips sharply the instant the target is first reached, before
+integral action winds up to the true CV equilibrium. Terminate on that dip and
+every charge ends at the CC–CV knee: the phase sequence looks perfect on a scope
+and the pack is nowhere near full. The clock also resets when `enable` drops — a
+charge paused by the load spends that time at zero current, which is not a taper
+— and the voltage condition is what rules out a CC phase derated by `I_limit`.
 
 ---
 

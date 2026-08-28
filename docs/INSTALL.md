@@ -132,15 +132,33 @@ take. The block runs, logs plausible traces, and times everything wrong.
 
 ## Step 3 — Insert the blocks
 
-With your model open and selected as the target, press **Insert blocks**.
+Three ways in, all producing the same two blocks:
 
 ```matlab
-p.insertInto('myBatteryModel')       % same thing from a script
+p.insertInto('myBatteryModel')   % straight into an open model
+p.stageBlocks()                  % into a scratch model, selected, ready for Ctrl+C
 ```
+
+or, from `bcpSimple`, the **Copy models** button — with the dropdown beside it
+set either to your model (inserts directly) or to *a scratch model*, which
+stages them for Ctrl+C, Ctrl+V.
 
 You get a `BMS` subsystem, a `Charger` subsystem, and the five lines between
 them already drawn — those five are fixed by the port contract, so there is no
 reason to make you draw them.
+
+**Copy the two together, not one at a time.** Three of those five lines carry a
+vector or a limit that looks like any other number on a canvas, and the BMS's
+`pack_meas` (7 wide) and `diag` (10 wide) outputs are adjacent. Redraw them by
+hand and the classic result is `diag` wired into the charger's `pack_meas`
+input, reported as a width mismatch — "expected `[7]`, got `[10]`" — against the
+charger's input delay, which is not where the mistake is.
+
+**The blocks carry their own constants.** Every threshold is compiled in as a
+numeric literal, so they mean the same thing in your model as they did in the
+window, on a machine with an empty base workspace. What they do need is
+`bcp_setup` on the MATLAB path of whatever session runs the model, because the
+generated code calls the functions in `alg/`.
 
 **Inserting is repeatable.** It deletes any previous block of the same name
 first, so changing a threshold and re-inserting is the normal edit cycle and
@@ -209,11 +227,18 @@ port and its own losses — and it is the only option if your load cannot source
 
 ### Sign conventions, the two that actually bite
 
-**Battery current polarity.** Simscape Battery blocks report current positive
-*out of* the positive terminal — positive when **discharging**. This package is
-charge-positive internally, so `bcp.BmsConfig.I_sign` defaults to `-1` to
-convert. Get it wrong and the BMS over-current-trips on a charge and never trips
-on a discharge. Check it once against a known discharge, then leave it alone.
+**Battery current polarity.** Simscape Battery components declare their cell
+current *positive in* — positive current flows into the positive terminal, which
+is what happens while **charging**. This package is charge-positive internally,
+so the conventions match and `bcp.BmsConfig.I_sign` defaults to `+1`. Set it to
+`-1` only for a model that reports discharge as positive.
+
+Get it wrong and the failure is loud but misleading: the BMS reads a large
+*positive* current during a discharge pulse, latches an over-current-**charge**
+fault inside the confirmation window, and opens the contactor part-way through
+the first pulse — while never tripping on a real charge at all. Check it once
+against a known discharge (pack current must read **negative**), then leave it
+alone.
 
 **Load output polarity.** `P_load_cmd` and `P_net_cmd` are draw-positive:
 positive watts come out of the pack. If your dynamic load block wants negative
@@ -313,4 +338,13 @@ bcp.Rate.audit('myBatteryModel', [p.Bms.Ts p.Charger.Ts])
 p.insertInto('myBatteryModel')
 % ... draw the wires from step 4 ...
 p.verifyWiring('myBatteryModel')
+
+% charge faster: one call moves the BMS limit, both charge over-current trips
+% and the supply's current and power ceilings together
+p = p.setChargeCurrent(13.5);
+p.insertInto('myBatteryModel')
+
+% give the pack cell-to-cell spread (exactly revertible)
+v = bcp.CellVariation('SOC_spread_pct',2, 'R_spread_pct',10, 'Seed',7);
+v.apply('myBatteryModel')
 ```

@@ -12,7 +12,7 @@ classdef bcpSimple < handle
 %     Pack     cell, series count, parallel count
 %     Load     pulse power, pulse length, repeat period
 %     Charge   current, stop SOC
-%     Run      starting SOC, run length, which plant
+%     Blocks   starting SOC, run length, and Copy models
 %
 %   Everything else -- every trip threshold, every loop gain, the taper, the
 %   precharge, the dwell timers -- comes from bcp.Project.autofillAll(), which
@@ -33,10 +33,34 @@ classdef bcpSimple < handle
 %     charger needs to put it back and how long it has. They update as you type.
 %     A load that the pack cannot deliver, or a gap too short to recharge in,
 %     is visible before you spend a run finding out.
+%
+%   COPY MODELS IS THE OUTPUT OF THIS WINDOW
+%     The blocks are meant to end up in YOUR simulation, so that button is on
+%     the main panel and the built-in test harness sits behind Additional
+%     settings. Copy models builds the BMS and the charger from the numbers
+%     above, wired to each other, and either stages them for Ctrl+C or inserts
+%     them straight into a model you have open. Every threshold is compiled into
+%     the blocks as a literal, so they mean the same thing in your model as they
+%     do here -- there are no base-workspace variables to carry across.
+%
+%   CHARGE CURRENT IS ONE NUMBER, ALL THE WAY DOWN
+%     Typing in the Charge current field calls bcp.Project.setChargeCurrent,
+%     which moves the BMS charge limit, both charge over-current trips and the
+%     supply's current and power ceilings together. In the pasted BMS block the
+%     same number appears once, as I_CHG_MAX_A at the top of BMS_core, with the
+%     trips computed from it three lines later.
 
     properties
         Proj                    % bcp.Project
         Tables                  % bcp.CellTables, or empty
+
+        Variation               % bcp.CellVariation, once Apply to pack has run
+        %  Public so the spread can be undone from the command line:
+        %
+        %      s = bcpSimple;  ...  s.Variation.revert()
+        %
+        %  It holds every parameter string it overwrote, so revert is exact
+        %  rather than a recomputed guess at what was there.
     end
 
     properties (Access = private)
@@ -46,6 +70,11 @@ classdef bcpSimple < handle
         Harness
         LastOut
         Painting logical = false
+    end
+
+    properties (Constant, Access = private)
+        ExtrasCollapsedH = 1    % the Additional settings row when it is shut
+        ExtrasExpandedH  = 150  % ...and when it is open
     end
 
     % =====================================================================
@@ -83,7 +112,10 @@ classdef bcpSimple < handle
             else
                 obj.log('Cell curves read from %s.', obj.Tables.Source);
             end
-            obj.log('Set the six numbers, then press Run.');
+            obj.log(['Set the numbers above, then press Copy models to put the ' ...
+                     'BMS and charger into your own simulation.']);
+            obj.log(['Additional settings has the built-in test harness and the ' ...
+                     'cell-variation tool.']);
         end
 
         function delete(obj)
@@ -111,6 +143,40 @@ classdef bcpSimple < handle
         function [ok, T, out] = run(obj)
             [ok, T, out] = obj.doRun();
         end
+
+        function press(obj, which)
+        %PRESS  Fire a button's callback, exactly as clicking it would.
+        %
+        %   The same reason set() exists: a button whose behaviour can only be
+        %   reached by clicking is a button nothing tests, and Copy models is
+        %   now the thing this window is for.
+            switch lower(char(which))
+                case 'copy',      obj.onCopy();
+                case 'extras',    obj.toggleExtras();
+                case 'variation', obj.onVariation();
+                case 'models',    obj.refreshModelList();
+                case 'run',       obj.onRun();
+                case 'plot',      obj.onPlot();
+                otherwise
+                    error('bcp:Simple:NoButton', ...
+                        ['Unknown button "%s". One of: copy, extras, variation, ', ...
+                         'models, run, plot.'], char(which));
+            end
+        end
+
+        function target(obj, model)
+        %TARGET  Choose the destination model, as the dropdown would.
+            obj.refreshModelList();
+            assert(any(strcmp(obj.Ctl.CopyTarget.ItemsData, model)), ...
+                'bcp:Simple:NoTarget', ...
+                'Model "%s" is not in the destination list. Is it open?', model);
+            obj.Ctl.CopyTarget.Value = model;
+        end
+
+        function s = logText(obj)
+        %LOGTEXT  Everything the log pane holds, as one string.
+            s = strjoin(string(obj.LogBox.Value), newline);
+        end
     end
 
     % =====================================================================
@@ -125,11 +191,11 @@ classdef bcpSimple < handle
             p = bcp.Project('Pack', bcp.PackSpec('Cell', c, 'S', 195, 'P', 1));
             p = p.autofillAll();
             p = obj.applyLoad(p, 31250, 2, 600, 5);
-            % A pulse this size is not a continuous load, and the auto-filled
-            % discharge trip is derived from the continuous rating. See
-            % pulse195_setup for the whole argument; the short form is that a
-            % trip at 1.1x continuous fires on any pulse worth testing.
-            p.Bms.I_dch_trip = 60;
+            % No discharge-trip override here any more. The auto-filled
+            % protection is two-tiered -- the continuous rating confirmed over
+            % ten seconds and the pulse rating over a tenth of one -- so a two
+            % second pulse above the continuous rating passes on its own merits
+            % rather than because a threshold was quietly raised to let it.
             p = p.sync();
         end
 
@@ -150,15 +216,17 @@ classdef bcpSimple < handle
 
         % -----------------------------------------------------------------
         function build(obj)
-            obj.Fig = uifigure('Name','BMS pulse test', 'Position',[120 80 700 760]);
-            g = uigridlayout(obj.Fig, [6 1]);
-            g.RowHeight = {150, 150, 120, 130, '1x', 30};
+            obj.Fig = uifigure('Name','BMS pulse test', 'Position',[120 80 700 800]);
+            g = uigridlayout(obj.Fig, [7 1]);
+            g.RowHeight = {150, 150, 120, 96, obj.ExtrasCollapsedH, '1x', 30};
             g.Padding = [10 10 10 10];
+            obj.Ctl.Grid = g;
 
             obj.buildPack(g);
             obj.buildLoad(g);
             obj.buildCharge(g);
             obj.buildRun(g);
+            obj.buildExtras(g);
 
             obj.LogBox = uitextarea(g, 'Editable','off', ...
                 'FontName','Consolas', 'Value',{''});
@@ -225,7 +293,9 @@ classdef bcpSimple < handle
             f.RowSpacing = 2;
 
             obj.num(f, 'Charge current', 'Icc',     4.35, 'A', ...
-                'Constant-current setpoint. Defaults to the cell datasheet standard charge.');
+                ['The ONE number that sets the charge rate. Defaults to the cell ', ...
+                 'datasheet standard charge; the datasheet maximum is shown below. ', ...
+                 'Both charge over-current trips move with it.']);
             obj.num(f, 'Stop at SOC',    'SOCstop', 95,   '%', ...
                 'Charging stops here and does not restart until SOC falls well below it.');
 
@@ -233,23 +303,64 @@ classdef bcpSimple < handle
         end
 
         function buildRun(obj, parent)
-            pnl = uipanel(parent, 'Title','Run');
+        %BUILDRUN  Starting conditions, and the button most people came for.
+        %
+        %   Copy models is first because it is what this window is FOR: the
+        %   simulation people actually care about is their own, and these blocks
+        %   are meant to end up in it. Running the built-in harness is how you
+        %   check the configuration before you copy it, which is a step you take
+        %   sometimes -- so it lives under Additional settings, one click away
+        %   rather than competing for the same row.
+            pnl = uipanel(parent, 'Title','Blocks');
             gg = uigridlayout(pnl, [2 1]);
-            gg.RowHeight = {58, 34};
+            gg.RowHeight = {32, 34};
+            gg.RowSpacing = 2;
 
-            f = uigridlayout(gg, [2 3]);
-            f.ColumnWidth = {150, 110, '1x'};
-            f.RowHeight = {26, 26};
+            f = uigridlayout(gg, [1 6]);
+            f.ColumnWidth = {80, 70, 20, 90, 70, '1x'};
             f.Padding = [0 0 0 0];
-            f.RowSpacing = 2;
+            uilabel(f, 'Text','Start SOC', ...
+                'Tooltip','State of charge the pack starts at.');
+            obj.Ctl.SOC0 = uieditfield(f, 'numeric', 'Value', 60, ...
+                'ValueChangedFcn', @(~,~) obj.onEdit());
+            uilabel(f, 'Text','%');
+            uilabel(f, 'Text','Simulate for', 'Tooltip','Length of the run.');
+            obj.Ctl.Stop = uieditfield(f, 'numeric', 'Value', 310, ...
+                'ValueChangedFcn', @(~,~) obj.onEdit());
+            uilabel(f, 'Text','s');
 
-            obj.num(f, 'Start SOC',    'SOC0', 60,  '%', 'State of charge the pack starts at.');
-            obj.num(f, 'Simulate for', 'Stop', 310, 's', 'Length of the run.');
+            r = uigridlayout(gg, [1 3]);
+            r.ColumnWidth = {150, 220, '1x'};
+            r.Padding = [0 2 0 2];
+            obj.Ctl.CopyBtn = uibutton(r, 'Text','Copy models', ...
+                'Tooltip', ['Build the BMS and charger from these numbers, wired ', ...
+                            'to each other, ready to paste into your own model.'], ...
+                'ButtonPushedFcn', @(~,~) obj.onCopy());
+            obj.Ctl.CopyTarget = uidropdown(r, ...
+                'Items', {'to a scratch model (Ctrl+C, Ctrl+V)'}, ...
+                'ItemsData', {''}, ...
+                'Tooltip', ['Where the blocks go. Any other model you have open ', ...
+                            'is listed here, and picking it inserts them directly.'], ...
+                'DropDownOpeningFcn', @(~,~) obj.refreshModelList());
+            obj.Ctl.ExtrasBtn = uibutton(r, 'Text', ...
+                [char(9656) ' Additional settings'], ...
+                'Tooltip', ['Run the built-in test harness, plot the last run, ', ...
+                            'and add cell-to-cell variation to a pack.'], ...
+                'ButtonPushedFcn', @(~,~) obj.toggleExtras());
+        end
+
+        % -----------------------------------------------------------------
+        function buildExtras(obj, parent)
+        %BUILDEXTRAS  The drawer: simulate here, and vary a pack's cells.
+            pnl = uipanel(parent, 'Title','Additional settings', 'Visible','off');
+            obj.Ctl.Extras = pnl;
+            gg = uigridlayout(pnl, [3 1]);
+            gg.RowHeight = {30, 30, '1x'};
+            gg.RowSpacing = 4;
 
             r = uigridlayout(gg, [1 4]);
-            r.ColumnWidth = {90, 300, 110, '1x'};
-            r.Padding = [0 2 0 2];
-
+            r.ColumnWidth = {60, 260, 90, '1x'};
+            r.Padding = [0 0 0 0];
             uilabel(r, 'Text','Plant');
             obj.Ctl.Plant = uidropdown(r, ...
                 'Items', {'fast stand-in (seconds)', 'Simscape pack (slower, real)'}, ...
@@ -259,6 +370,47 @@ classdef bcpSimple < handle
                 'ButtonPushedFcn', @(~,~) obj.onRun());
             obj.Ctl.PlotBtn = uibutton(r, 'Text','Plot last run', 'Enable','off', ...
                 'ButtonPushedFcn', @(~,~) obj.onPlot());
+
+            v = uigridlayout(gg, [1 8]);
+            v.ColumnWidth = {90, 55, 70, 55, 80, 55, 130, '1x'};
+            v.Padding = [0 0 0 0];
+            uilabel(v, 'Text','Cell spread', ...
+                'Tooltip', ['Cell-to-cell variation applied to a Simscape battery ', ...
+                            'pack in the model you pick above. Peak-to-peak.']);
+            obj.Ctl.VarSOC = uieditfield(v, 'numeric', 'Value', 2, ...
+                'Tooltip','Spread in initial SOC, in SOC percentage points.');
+            uilabel(v, 'Text','pts SOC');
+            obj.Ctl.VarR = uieditfield(v, 'numeric', 'Value', 10, ...
+                'Tooltip','Spread in element resistance, percent of nominal.');
+            uilabel(v, 'Text','% R,  seed');
+            obj.Ctl.VarSeed = uieditfield(v, 'numeric', 'Value', 7, ...
+                'RoundFractionalValues','on', ...
+                'Tooltip','Change the seed to draw a different pack from the same spread.');
+            obj.Ctl.VarBtn = uibutton(v, 'Text','Apply to pack', ...
+                'Tooltip', ['Writes the spread into the battery blocks of the ', ...
+                            'model selected in the dropdown above.'], ...
+                'ButtonPushedFcn', @(~,~) obj.onVariation());
+
+            obj.Ctl.ExtrasNote = uilabel(gg, 'WordWrap','on', 'FontAngle','italic', ...
+                'Text', ['Cell spread applies to the BATTERY, not to these blocks, ', ...
+                         'so it goes into whichever model you selected next to ', ...
+                         'Copy models. Nothing to undo by hand: bcp.CellVariation ', ...
+                         'stores every parameter it touches and revert() puts them back.']);
+        end
+
+        % -----------------------------------------------------------------
+        function toggleExtras(obj)
+            open = strcmp(obj.Ctl.Extras.Visible, 'off');
+            obj.Ctl.Extras.Visible = matlab.lang.OnOffSwitchState(open);
+            h = obj.Ctl.Grid.RowHeight;
+            if open
+                h{5} = obj.ExtrasExpandedH;
+                obj.Ctl.ExtrasBtn.Text = [char(9662) ' Additional settings'];
+            else
+                h{5} = obj.ExtrasCollapsedH;
+                obj.Ctl.ExtrasBtn.Text = [char(9656) ' Additional settings'];
+            end
+            obj.Ctl.Grid.RowHeight = h;
         end
 
         function num(obj, parent, label, key, value, unit, tip)
@@ -289,8 +441,7 @@ classdef bcpSimple < handle
                 obj.Proj = obj.Proj.setPack(bcp.PackSpec('Cell', c, ...
                     'S', obj.Ctl.S.Value, 'P', obj.Ctl.P.Value));
                 obj.Proj = obj.Proj.autofillAll();
-                obj.Ctl.Icc.Value = obj.Proj.Charger.I_cc_A;
-                obj.Proj.Bms.I_dch_trip = 60;
+                obj.Ctl.Icc.Value = obj.Proj.Bms.I_chg_max_A;
                 obj.Proj = obj.Proj.sync();
             catch ME
                 obj.log('REJECTED cell change: %s', ME.message);
@@ -314,10 +465,13 @@ classdef bcpSimple < handle
                 p = p.autofillAll();
                 p = obj.applyLoad(p, obj.Ctl.Pw.Value, obj.Ctl.Len.Value, ...
                                      obj.Ctl.Period.Value, 5);
-                p.Charger.I_cc_A  = obj.Ctl.Icc.Value;
+                % One call for the charge rate. It moves the BMS limit, both
+                % charge over-current trips and the supply ceiling together, so
+                % the field on this window is genuinely the only thing that has
+                % to change to charge faster.
+                p = p.setChargeCurrent(obj.Ctl.Icc.Value);
                 p.Bms.SOC_stop    = obj.Ctl.SOCstop.Value / 100;
                 p.Bms.SOC_restart = min(p.Bms.SOC_stop - 0.10, p.Bms.SOC_stop*0.9);
-                p.Bms.I_dch_trip  = 60;
                 obj.Proj = p.sync();
             catch ME
                 obj.Proj = before;
@@ -361,8 +515,12 @@ classdef bcpSimple < handle
             d.deliverable = all(isfinite(d.I));
             d.Ah_per_pulse  = max(d.I) * d.len / 3600;
             d.SOC_per_pulse = 100 * d.Ah_per_pulse / d.Q;
-            d.recharge_s    = d.Ah_per_pulse * 3600 / max(p.Charger.I_cc_A, eps);
-            d.trip          = p.Bms.I_dch_trip;
+            d.recharge_s    = d.Ah_per_pulse * 3600 / max(p.chargeCurrent(), eps);
+            % Headroom is measured against the FAST discharge trip, because that
+            % is the tier a pulse can actually reach: the sustained trip confirms
+            % over t_i_cont_s, longer than any pulse this window describes.
+            d.trip          = p.Bms.I_dch_peak_A;
+            d.trip_cont     = p.Bms.I_dch_trip;
             d.headroom      = 100*(d.trip / max(d.I) - 1);
         end
 
@@ -387,9 +545,12 @@ classdef bcpSimple < handle
                 '%d cells   %.2f Ah   %.0f V nominal   %.0f Wh', ...
                 p.Pack.NCells, p.Pack.Q_Ah, p.Pack.V_nom, p.Pack.Wh);
             obj.Ctl.PackNote.Text = sprintf( ...
-                ['Protection is derived from this: cell trips %.2f V high / %.2f V low, ' ...
-                 'charge trip %.1f A, discharge trip %.0f A.'], ...
-                p.Bms.V_ov_trip, p.Bms.V_uv_trip, p.Bms.I_chg_trip, p.Bms.I_dch_trip);
+                ['Protection derived from the datasheet: cell trips %.2f V high / ' ...
+                 '%.2f V low; charge %.2f A over %.0f s or %.2f A over %.2f s; ' ...
+                 'discharge %.0f A over %.0f s or %.0f A over %.2f s.'], ...
+                p.Bms.V_ov_trip, p.Bms.V_uv_trip, ...
+                p.Bms.I_chg_trip, p.Bms.t_i_cont_s, p.Bms.I_chg_peak_A, p.Bms.t_i_trip, ...
+                p.Bms.I_dch_trip, p.Bms.t_i_cont_s, p.Bms.I_dch_peak_A, p.Bms.t_i_trip);
 
             d = obj.computeDerived();
             if ~d.deliverable
@@ -402,8 +563,8 @@ classdef bcpSimple < handle
                 obj.Ctl.LoadNote.FontColor = [0 0 0];
                 obj.Ctl.LoadNote.Text = sprintf( ...
                     ['%.1f A at the start, %.1f A when full -- pack sags to %.0f V ' ...
-                     '(%.3f V per cell). Costs %.3f%% SOC per pulse. Discharge trip ' ...
-                     'is %.0f A, so %.0f%% headroom.'], ...
+                     '(%.3f V per cell). Costs %.3f%% SOC per pulse. The pulse ' ...
+                     'discharge trip is %.0f A, so %.0f%% headroom.'], ...
                     d.I(1), d.I(2), min(d.V), min(d.V)/p.Pack.S, ...
                     d.SOC_per_pulse, d.trip, d.headroom);
                 if d.headroom < 10
@@ -411,7 +572,14 @@ classdef bcpSimple < handle
                 end
             end
 
-            if d.recharge_s > d.gap
+            chgMax = p.Pack.I_chg_max_A;
+            if p.Bms.I_chg_max_A > chgMax + 1e-9
+                obj.Ctl.ChargeNote.FontColor = [0.7 0 0];
+                obj.Ctl.ChargeNote.Text = sprintf( ...
+                    ['%.2f A is above the %.1f A datasheet MAXIMUM charge current ', ...
+                     'for this pack. Lower it, or add cells in parallel.'], ...
+                    p.Bms.I_chg_max_A, chgMax);
+            elseif d.recharge_s > d.gap
                 obj.Ctl.ChargeNote.FontColor = [0.7 0 0];
                 obj.Ctl.ChargeNote.Text = sprintf( ...
                     ['Needs %.0f s to replace one pulse but only %.0f s between them. ' ...
@@ -421,10 +589,11 @@ classdef bcpSimple < handle
                 obj.Ctl.ChargeNote.FontColor = [0 0 0];
                 obj.Ctl.ChargeNote.Text = sprintf( ...
                     ['Replaces one pulse in %.0f s and has %.0f s between them, so the ' ...
-                     'pack climbs about %.2f%% SOC per cycle until it reaches %.0f%%.'], ...
+                     'pack climbs about %.2f%% SOC per cycle until it reaches %.0f%%. ' ...
+                     'Datasheet limits: %.2f A standard, %.1f A maximum.'], ...
                     d.recharge_s, d.gap, ...
-                    100*(p.Charger.I_cc_A*d.gap/3600)/d.Q - d.SOC_per_pulse, ...
-                    p.Bms.SOC_stop*100);
+                    100*(p.chargeCurrent()*d.gap/3600)/d.Q - d.SOC_per_pulse, ...
+                    p.Bms.SOC_stop*100, p.Pack.I_chg_std_A, chgMax);
             end
 
             issues = p.check();
@@ -440,6 +609,115 @@ classdef bcpSimple < handle
 
         function clearPainting(obj)
             obj.Painting = false;
+        end
+
+        % =================================================================
+        function refreshModelList(obj)
+        %REFRESHMODELLIST  Repopulate the destination dropdown from what is open.
+        %
+        %   Rebuilt every time the list is opened rather than at startup, because
+        %   the whole point is to offer the model you have just opened -- and the
+        %   order people do things in is: open this window, realise they want the
+        %   blocks, then open their own model.
+            items = {'to a scratch model (Ctrl+C, Ctrl+V)'};
+            data  = {''};
+            try
+                open = find_system('type','block_diagram');
+            catch
+                open = {};
+            end
+            skip = {'bcp_blocks','bcp_harness','simulink'};
+            for k = 1:numel(open)
+                nm = open{k};
+                if any(strcmpi(nm, skip)) || strncmpi(nm, 'tb_', 3)
+                    continue;
+                end
+                items{end+1} = sprintf('insert into %s', nm); %#ok<AGROW>
+                data{end+1}  = nm;                            %#ok<AGROW>
+            end
+            keep = obj.Ctl.CopyTarget.Value;
+            obj.Ctl.CopyTarget.Items     = items;
+            obj.Ctl.CopyTarget.ItemsData = data;
+            if any(strcmp(data, keep))
+                obj.Ctl.CopyTarget.Value = keep;
+            end
+        end
+
+        % -----------------------------------------------------------------
+        function onCopy(obj)
+        %ONCOPY  Build the two blocks from the current numbers, ready to paste.
+        %
+        %   Both blocks, wired to each other, with this configuration compiled
+        %   into them as literals. That last part matters: the blocks carry their
+        %   own constants, so they mean the same thing in your model as they do
+        %   here, on a machine with an empty base workspace.
+            obj.Ctl.CopyBtn.Enable = 'off';
+            r = onCleanup(@() set(obj.Ctl.CopyBtn, 'Enable', 'on'));
+            target = obj.Ctl.CopyTarget.Value;
+            try
+                issues = obj.Proj.check();
+                for k = 1:numel(issues)
+                    obj.log('note %d: %s', k, issues{k});
+                end
+
+                if isempty(target)
+                    m = obj.Proj.stageBlocks();
+                    obj.log(['Staged the BMS and charger in "%s" with both blocks ' ...
+                             'selected. Ctrl+C there, Ctrl+V in your model.'], m);
+                else
+                    obj.Proj.insertInto(target);
+                    try, open_system(target); catch, end
+                    obj.log('Inserted the BMS and charger into "%s".', target);
+                end
+                obj.log(['Charge rate is %.2f A. In the pasted BMS block it is ' ...
+                         'I_CHG_MAX_A at the top of BMS_core -- one number, and ' ...
+                         'the over-current trips follow it.'], obj.Proj.Bms.I_chg_max_A);
+                obj.log(['Both blocks need bcp_setup on the MATLAB path to ' ...
+                         'compile. Wire your battery to the BMS inports and the ' ...
+                         'BMS load command out to your load; docs/INSTALL.md has ' ...
+                         'the list.']);
+            catch ME
+                obj.log('Copy failed: %s', ME.message);
+            end
+        end
+
+        % -----------------------------------------------------------------
+        function onVariation(obj)
+        %ONVARIATION  Put cell-to-cell spread into the selected model's pack.
+            target = obj.Ctl.CopyTarget.Value;
+            if isempty(target)
+                obj.log(['Pick the model holding your battery in the dropdown ' ...
+                         'next to Copy models first -- cell spread goes into the ' ...
+                         'pack, not into these blocks.']);
+                return;
+            end
+            obj.Ctl.VarBtn.Enable = 'off';
+            r = onCleanup(@() set(obj.Ctl.VarBtn, 'Enable', 'on'));
+            try
+                obj.Variation = bcp.CellVariation( ...
+                    'SOC_spread_pct', obj.Ctl.VarSOC.Value, ...
+                    'R_spread_pct',   obj.Ctl.VarR.Value, ...
+                    'Q_spread_pct',   obj.Ctl.VarR.Value / 3, ...
+                    'SOC_base',       obj.Ctl.SOC0.Value / 100, ...
+                    'Seed',           obj.Ctl.VarSeed.Value);
+                T = obj.Variation.apply(target);
+                obj.log('Cell variation applied to %d element(s) in "%s".', ...
+                    height(T), target);
+                if height(T) == 1
+                    obj.log(['Only one element: that pack is lumped to a single ' ...
+                             'cell model, so it has no per-cell state to vary. ' ...
+                             'Rebuild it at Detailed resolution in Battery Model ' ...
+                             'Builder if you need real cell spread.']);
+                else
+                    obj.log('  initial SOC now spans %.2f%% to %.2f%%, R spans %.3fx to %.3fx.', ...
+                        min(T.SOC_init)*100, max(T.SOC_init)*100, ...
+                        min(T.Resistance_x), max(T.Resistance_x));
+                end
+                obj.log(['  To undo: keep this window in a variable (s = bcpSimple) ' ...
+                         'and call s.Variation.revert(), or just reload the model.']);
+            catch ME
+                obj.log('Cell variation failed: %s', ME.message);
+            end
         end
 
         % =================================================================

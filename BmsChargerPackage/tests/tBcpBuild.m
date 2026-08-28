@@ -141,10 +141,10 @@ classdef tBcpBuild < matlab.unittest.TestCase
             tc.verifyEqual(done(end), 1, ...
                 'A completed CV taper must terminate the charge.');
 
-            % The first sample is CV at zero amps, by design: the charger's
+            % The first sample commands zero amps, by design: the charger's
             % input delay is seeded with a full pack (see
             % ChargerBuilder.initialMeasLiteral) so that before its first real
-            % conversion it commands nothing. Assert that rather than working
+            % conversion it asks for nothing. Assert that rather than working
             % around it -- a charger whose first act is to command current on a
             % pack it has not measured is the failure mode being avoided.
             I = tc.sig(out, 'chg_I_chg_cmd');
@@ -166,6 +166,66 @@ classdef tBcpBuild < matlab.unittest.TestCase
                  'anti-windup, not the threshold.']);
             tc.verifyGreaterThan(max(Vc(:)), p.Charger.V_cv_cell - 0.02, ...
                 'The charge must actually reach its target, not stop short.');
+        end
+
+        function chargerModeDoesNotChatterThroughTheKnee(tc)
+        %CHARGERMODEDOESNOTCHATTERTHROUGHTHEKNEE  The limit cycle, on the real
+        %   blocks rather than on the algorithm alone.
+        %
+        %   A CC-CV charge passes through the knee once. The mode output should
+        %   therefore change a handful of times over the whole run -- OFF into
+        %   CC, CC into CV, CV into DONE, plus whatever the arbiter's gaps add.
+        %   Before the loop was given per-loop integrators and the mode a
+        %   hysteresis band, it changed hundreds of times: the command
+        %   oscillated between the ceiling and well below it while the pack sat
+        %   quietly at its target.
+            p = bcp.Project();
+            p.Load = bcp.LoadSignal('Waveform','off');
+            p.Bms.SOC_stop    = 0.999;
+            p.Bms.SOC_restart = 0.900;
+            p.Bms.t_quiet_s   = 0;
+            p = p.sync();
+            h = tc.makeHarness('tb_knee', p, 'SOC_init', 0.90);
+            out = h.simulate(1200);
+
+            mode = tc.sig(out, 'chg_mode');
+            flips = sum(diff(mode) ~= 0);
+            tc.verifyLessThanOrEqual(flips, 12, ...
+                sprintf(['The charger reported %d mode changes in one CC-CV ', ...
+                         'charge. A charge passes the knee once; anything in the ', ...
+                         'hundreds is the CC/CV limit cycle back again.'], flips));
+
+            % A limit cycle shows in the command before it shows in the mode, so
+            % check the command too: during CV the current must fall, not
+            % oscillate back up to the ceiling.
+            I = tc.sig(out, 'chg_I_chg_cmd');
+            cv = mode == 3;
+            if any(cv)
+                rises = sum(diff(I(cv)) > 0.05 * max(I));
+                tc.verifyLessThanOrEqual(rises, 5, ...
+                    ['During CV the command should taper. Repeated jumps back ', ...
+                     'toward the ceiling are the loop hunting, not a taper.']);
+            end
+        end
+
+        function diagOutputIsExactlyTenWide(tc)
+        %DIAGOUTPUTISEXACTLYTENWIDE  The width contract, asserted where it is
+        %   cheap. Get it wrong and the failure is a Simulink port mismatch
+        %   reported against whatever the wire happened to reach -- classically
+        %   the charger's 7-wide pack_meas input, which is the port next door on
+        %   the BMS block and the easy one to hit by mistake.
+            p = bcp.Project();
+            h = tc.makeHarness('tb_diagwidth', p);
+            out = h.simulate(1);
+            D = tc.sig(out, 'bms_diag');
+            tc.verifyEqual(size(D,2), bcp.Signals.DIAG_NUM, ...
+                'diag must be exactly bcp.Signals.DIAG_NUM wide.');
+            tc.verifyEqual(numel(bcp.Signals.diagNames()), bcp.Signals.DIAG_NUM, ...
+                'and diagNames must name every channel of it.');
+
+            M = tc.sig(out, 'bms_pack_meas');
+            tc.verifyEqual(size(M,2), bcp.Signals.NUM, ...
+                'pack_meas must be exactly bcp.Signals.NUM wide.');
         end
 
         function protectionDoesNotDeadlockAgainstItsOwnLoad(tc)

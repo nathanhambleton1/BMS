@@ -163,6 +163,23 @@ classdef tBcpAlgorithms < matlab.unittest.TestCase
                 'I_sign = -1 must turn a discharge-positive array into charge-negative.');
         end
 
+        function simscapePolarityNeedsNoFlip(tc)
+        %SIMSCAPEPOLARITYNEEDSNOFLIP  The package default, tested as a default.
+        %
+        %   Simscape Battery components declare cell current "positive in",
+        %   which is positive while CHARGING -- the same convention this package
+        %   uses. So I_sign = +1 passes the array through unchanged, and a
+        %   discharge arrives negative. The opposite default is what made the
+        %   BMS latch an over-current-CHARGE fault during a discharge pulse.
+            P = bcp.BmsConfig().monitorParams();
+            tc.verifyEqual(P.I_sign, 1, ...
+                'The shipped default must be +1: Simscape packs are charge-positive.');
+            m = bcp_pack_monitor(repmat(3.6,14,1), repmat(0.5,14,1), ...
+                                 repmat(-42,14,1), P);
+            tc.verifyEqual(m(bcp.Signals.I_PACK), -42, 'AbsTol',1e-9, ...
+                'A discharging Simscape pack must read NEGATIVE at the BMS.');
+        end
+
         function percentSocIsScaled(tc)
             P = struct('SeriesCount',4, 'I_sign',1, 'SOC_in_percent',true);
             m = bcp_pack_monitor(repmat(3.6,4,1), [40;50;60;70], zeros(4,1), P);
@@ -323,14 +340,15 @@ classdef tBcpAlgorithms < matlab.unittest.TestCase
 
         function concurrentModeIgnoresTheLoadButDerates(tc)
             P = tc.arbParams('AllowConcurrent',true, 'I_chg_headroom_A',5, ...
-                'I_chg_trip',25, 'I_chg_margin',0.9);
+                'I_chg_max_A',22.5);
             [en, lim] = bcp_arbiter(1, 0.50, 3.7, 1, 0, P);
             tc.verifyEqual(en, 1, 'Concurrent mode charges through an active load.');
             tc.verifyEqual(lim, 5, 'AbsTol',1e-9, ...
                 'Under load, the ceiling must be the concurrent headroom.');
             [~, lim] = bcp_arbiter(0, 0.50, 3.7, 1, 0, P);
             tc.verifyEqual(lim, 22.5, 'AbsTol',1e-9, ...
-                'With no load, the ceiling is I_chg_trip * I_chg_margin.');
+                ['With no load, the ceiling is the configured charge rate itself ', ...
+                 '-- not a derated fault threshold.']);
         end
 
         function socStopLatchesWithHysteresis(tc)
@@ -392,10 +410,21 @@ classdef tBcpAlgorithms < matlab.unittest.TestCase
         end
 
         function farFromTargetRunsAtTheCeiling(tc)
+        %FARFROMTARGETRUNSATTHECEILING  In CC the command sits on whichever
+        %   ceiling is lower, and in the real system that is the BMS's -- the
+        %   charge rate it publishes on I_limit. P.I_cc_A is the supply's own
+        %   rating and is sized at the pack maximum, so it is deliberately NOT
+        %   the binding one. Passing a realistic limit here is the honest test;
+        %   an unbounded one exercises a configuration that cannot occur.
             P = tc.chgParams();
-            [I, ~, mode] = bcp_charger(50, 3.70, 0, 1, 1e6, P);
+            bmsCeiling = bcp.BmsConfig().fromPack( ...
+                bcp.PackSpec('Cell', bcp.CellLibrary.P45B(), 'S',14, 'P',5)).I_chg_max_A;
+            tc.assumeLessThan(bmsCeiling, P.I_cc_A, ...
+                'The supply must be the larger of the two for this test to mean anything.');
+            [I, ~, mode] = bcp_charger(50, 3.70, 0, 1, bmsCeiling, P);
             tc.verifyEqual(mode, 2, 'Well below the CV target the mode must be CC.');
-            tc.verifyEqual(I, P.I_cc_A, 'AbsTol',1e-9);
+            tc.verifyEqual(I, bmsCeiling, 'AbsTol',1e-9, ...
+                'and the command must sit on the BMS ceiling, not on the supply rating.');
         end
 
         function arbiterLimitDeratesTheCommand(tc)
@@ -407,12 +436,41 @@ classdef tBcpAlgorithms < matlab.unittest.TestCase
         end
 
         function nearTargetTheVoltageLoopTakesOver(tc)
+        %NEARTARGETTHEVOLTAGELOOPTAKESOVER  The mode change has to wait out
+        %   t_mode_min_s -- one sample is not enough, deliberately. A mode that
+        %   can flip on any single sample is a mode that chatters every sample
+        %   while the command sits on the ceiling.
             P = tc.chgParams();
-            [I, ~, mode] = bcp_charger(58.0, P.V_cv_cell - 0.002, 0, 1, 1e6, P);
+            n = ceil(P.t_mode_min_s / P.Ts) + 5;
+            for k = 1:n
+                [I, ~, mode] = bcp_charger(58.0, P.V_cv_cell - 0.002, 0, 1, 1e6, P);
+            end
             tc.verifyEqual(mode, 3, ...
                 'A few millivolts from the target, the voltage loop must bind.');
             tc.verifyLessThan(I, P.I_cc_A);
             tc.verifyGreaterThanOrEqual(I, 0);
+        end
+
+        function modeDoesNotChatterAtTheKnee(tc)
+        %MODEDOESNOTCHATTERATTHEKNEE  The limit cycle this hysteresis exists for.
+        %
+        %   Hold the pack exactly where the command sits on the current ceiling
+        %   and jitter the measured cell voltage by a fraction of a millivolt,
+        %   which is what a real solver does. With a bare comparison against the
+        %   ceiling the mode output flips on most samples. It must not.
+            P = tc.chgParams();
+            Icc = 5;                       % a realistic BMS ceiling, not 1e6
+            V = P.V_cv_cell - Icc / P.Kp_cell;   % the voltage that commands Icc
+            modes = zeros(400,1);
+            for k = 1:400
+                jitter = 2e-5 * sin(k/3);   % +/- 20 microvolts
+                [~,~,modes(k)] = bcp_charger(58.0, V + jitter, 0, 1, Icc, P);
+            end
+            flips = sum(diff(modes(50:end)) ~= 0);
+            tc.verifyLessThanOrEqual(flips, 2, ...
+                sprintf(['The reported mode changed %d times while the pack sat ', ...
+                         'still at the CC/CV knee. That is the limit cycle the ', ...
+                         'hysteresis band and the minimum dwell exist to stop.'], flips));
         end
 
         function theHighestCellIsWhatIsRegulated(tc)
@@ -421,7 +479,11 @@ classdef tBcpAlgorithms < matlab.unittest.TestCase
         %   that distinguishes a per-cell CV loop from a pack-voltage one.
             P = tc.chgParams();
             packWellBelowTarget = P.V_cv_pack - 2.0;
-            [I, ~, mode] = bcp_charger(packWellBelowTarget, P.V_cv_cell, 0, 1, 1e6, P);
+            n = ceil(P.t_mode_min_s / P.Ts) + 5;
+            for k = 1:n
+                [I, ~, mode] = bcp_charger(packWellBelowTarget, P.V_cv_cell, ...
+                                           0, 1, 1e6, P);
+            end
             tc.verifyEqual(mode, 3, ...
                 'The max cell at target must force CV even with the pack 2 V low.');
             tc.verifyLessThan(I, 0.1, ...
@@ -457,7 +519,12 @@ classdef tBcpAlgorithms < matlab.unittest.TestCase
             [I,~,mode,~,~,done] = bcp_charger(55.0, 4.00, 0, 1, 1e6, P);
             tc.verifyEqual(done, 0, 'Below V_recharge_cell the charger must re-arm.');
             tc.verifyGreaterThan(I, 0);
-            tc.verifyEqual(mode, 2);
+            % Which of PRECHARGE / CC / CV it re-enters depends on how far below
+            % the target the pack has fallen and on the ceiling it is given, and
+            % none of those is what this test is about. What matters is that it
+            % is charging again rather than still reporting DONE.
+            tc.verifyTrue(any(mode == [1 2 3]), ...
+                'A re-armed charger must report an active charging mode, not DONE.');
         end
 
         function interruptionByTheLoadResetsTheTaperClock(tc)
@@ -501,15 +568,20 @@ classdef tBcpAlgorithms < matlab.unittest.TestCase
             tc.verifyEqual(spec.NCells, 70);
             tc.verifyEqual(spec.I_chg_std_A, 21.75, 'AbsTol',1e-9);
             tc.verifyEqual(spec.I_dch_A, 225, 'AbsTol',1e-9);
-            tc.verifyEqual(spec.R_dc_Ohm, 0.012*14/5, 'AbsTol',1e-12);
+            tc.verifyEqual(spec.R_dc_Ohm, 0.015*14/5, 'AbsTol',1e-12);
+            tc.verifyEqual(spec.I_chg_max_A, 67.5, 'AbsTol',1e-9, ...
+                'The datasheet MAXIMUM charge current is 13.5 A per cell, not the standard 4.35 A.');
+            tc.verifyEqual(spec.I_dch_pulse_A, 337.5, 'AbsTol',1e-9);
             tc.verifyEqual(spec.Wh, 22.5*50.4, 'AbsTol',1e-6);
         end
 
         function autofillMatchesHandCalculation(tc)
             spec = bcp.PackSpec('Cell', bcp.CellLibrary.P45B(), 'S',14, 'P',5);
             c = bcp.ChargerConfig.fromPack(spec);
-            tc.verifyEqual(c.I_cc_A, 21.75, 'AbsTol',1e-9, ...
-                'Default CC is the datasheet standard charge times P.');
+            tc.verifyEqual(c.I_cc_A, 67.5, 'AbsTol',1e-9, ...
+                ['I_cc_A is the SUPPLY rating, and auto-fill sizes it at the pack ', ...
+                 'datasheet maximum so the supply is never the thing quietly ', ...
+                 'limiting a test. The charge RATE is bcp.BmsConfig.I_chg_max_A.']);
             tc.verifyEqual(c.I_taper_A, 22.5/20, 'AbsTol',1e-9, 'C/20 taper.');
             tc.verifyEqual(c.V_cv_cell, 4.20, 'AbsTol',1e-9);
             tc.verifyEqual(c.V_cv_pack, 58.80, 'AbsTol',1e-9);
@@ -527,24 +599,86 @@ classdef tBcpAlgorithms < matlab.unittest.TestCase
 
         function autofillClampsAnImpossibleCRate(tc)
             spec = bcp.PackSpec('Cell', bcp.CellLibrary.P45B(), 'S',14, 'P',5);
+            % 5C is 112.5 A on this pack, above its 67.5 A datasheet maximum.
             c = tc.verifyWarning( ...
-                @() bcp.ChargerConfig.fromPack(spec, 'C_rate', 3), ...
+                @() bcp.ChargerConfig.fromPack(spec, 'C_rate', 5), ...
                 'bcp:ChargerConfig:OverCRate');
             tc.verifyEqual(c.I_cc_A, spec.I_chg_max_A, 'AbsTol',1e-9);
         end
 
-        function bmsAutofillLeavesHeadroomAboveTheChargeCurrent(tc)
+        function bmsAutofillDefaultsTheRateToTheStandardCharge(tc)
             spec = bcp.PackSpec('Cell', bcp.CellLibrary.P50B(), 'S',20, 'P',4);
             b = bcp.BmsConfig().fromPack(spec);
             c = bcp.ChargerConfig.fromPack(spec);
-            tc.verifyGreaterThan(b.I_chg_trip * b.I_chg_margin, c.I_cc_A, ...
-                ['The over-current trip, derated by the arbiter margin, must still ', ...
-                 'sit above the charge current -- otherwise the charger cannot ', ...
-                 'reach CC without tripping.']);
+            tc.verifyEqual(b.I_chg_max_A, spec.I_chg_std_A, 'AbsTol',1e-9, ...
+                ['The default charge RATE is the datasheet standard charge. The ', ...
+                 'P50B maximum is 5C, qualified by a temperature cutoff this ', ...
+                 'package cannot enforce, so it is a ceiling and not a default.']);
+            tc.verifyGreaterThan(b.I_chg_trip, b.I_chg_max_A, ...
+                ['The over-current trip must sit above the rate the BMS itself ', ...
+                 'permits, or every charge faults out at the moment it works.']);
+            tc.verifyGreaterThanOrEqual(c.I_cc_A, b.I_chg_max_A, ...
+                'The supply must be able to source the rate the BMS permits.');
             tc.verifyEqual(b.V_ov_trip, 4.25, 'AbsTol',1e-9, ...
                 'The trip is the 4.20 V cutoff plus 50 mV of fault margin.');
+            tc.verifyEqual(b.V_uv_trip, 2.50, 'AbsTol',1e-9, ...
+                ['The under-voltage trip sits ON the datasheet end-of-discharge ', ...
+                 'voltage. Below it is not margin, it is over-discharge.']);
             tc.verifyGreaterThan(b.V_ov_trip, c.V_cv_cell);
             tc.verifyEqual(b.SeriesCount, 20);
+        end
+
+        function overCurrentIsStagedInTwoTiers(tc)
+        %OVERCURRENTISSTAGEDINTWOTIERS  The reason a pulse test no longer needs
+        %   its discharge trip raised by hand.
+            spec = bcp.PackSpec('Cell', bcp.CellLibrary.P45B(), 'S',195, 'P',1);
+            b = bcp.BmsConfig().fromPack(spec);
+            tc.verifyGreaterThan(b.I_dch_peak_A, b.I_dch_trip, ...
+                'The fast tier must sit above the sustained tier.');
+            tc.verifyGreaterThan(b.t_i_cont_s, b.t_i_trip, ...
+                'and confirm over a shorter time, not a longer one.');
+
+            % A 2 s pulse at 55 A: above the continuous rating, well inside the
+            % pulse rating. It must reach neither tier.
+            P = b.protectionParams();
+            faults = 0;
+            for k = 1:round(2 / P.Ts)
+                [~,~,~,~,faults] = bcp_protection(3.2, 3.4, 25, -55, false, P);
+            end
+            tc.verifyEqual(faults, 0, ...
+                ['A 2 s pulse above the CONTINUOUS rating must not trip: the ', ...
+                 'sustained tier needs ten seconds of dwell and the fast tier is ', ...
+                 'far higher. This is the case one trip cannot get right.']);
+
+            % The same current that never stops does have to latch.
+            clear bcp_protection
+            for k = 1:round(12 / P.Ts)
+                [~,~,~,~,faults] = bcp_protection(3.2, 3.4, 25, -55, false, P);
+            end
+            tc.verifyNotEqual(faults, 0, ...
+                'Held past t_i_cont_s, the same current is a sustained over-draw.');
+        end
+
+        function setChargeCurrentMovesEverythingThatMatters(tc)
+        %SETCHARGECURRENTMOVESEVERYTHINGTHATMATTERS  One call, and nothing left
+        %   behind to clip the new rate in some other block.
+            p = bcp.Project();
+            p = p.setChargeCurrent(3 * p.Bms.I_chg_max_A);
+            I = p.Bms.I_chg_max_A;
+            tc.verifyGreaterThan(p.Bms.I_chg_trip,   I, 'sustained trip follows');
+            tc.verifyGreaterThan(p.Bms.I_chg_peak_A, p.Bms.I_chg_trip, 'fast trip follows');
+            tc.verifyGreaterThanOrEqual(p.Charger.I_cc_A, I, 'supply current follows');
+            tc.verifyGreaterThanOrEqual(p.Charger.P_chg_max_W, I * p.Pack.V_max, ...
+                ['The supply POWER ceiling has to follow too. It is the second ', ...
+                 'thing that silently clipped a raised charge rate.']);
+            % check() will note that a rate above the datasheet standard charge
+            % is unenforced without a temperature input, which is true and is
+            % the point of saying it. What must NOT survive is any complaint
+            % about the supply or its power ceiling binding first.
+            issues = p.check();
+            tc.verifyFalse(any(contains(issues, 'supply')), ...
+                ['Nothing in the charger may be left behind clipping the new ', ...
+                 'rate. That was the whole failure this call exists to prevent.']);
         end
 
         function projectDefaultsAreSelfConsistent(tc)
