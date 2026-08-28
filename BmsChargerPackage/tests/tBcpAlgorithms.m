@@ -15,6 +15,7 @@ classdef tBcpAlgorithms < matlab.unittest.TestCase
     methods (TestMethodSetup)
         function resetState(~)
             clear bcp_load_scheduler bcp_protection bcp_arbiter bcp_charger
+            clear bcp_load_limiter
         end
     end
 
@@ -36,6 +37,26 @@ classdef tBcpAlgorithms < matlab.unittest.TestCase
         function P = arbParams(varargin)
             P = bcp.BmsConfig().arbiterParams();
             for k = 1:2:numel(varargin), P.(varargin{k}) = varargin{k+1}; end
+        end
+
+        function P = limParams(varargin)
+            P = bcp.BmsConfig().limiterParams();
+            for k = 1:2:numel(varargin), P.(varargin{k}) = varargin{k+1}; end
+        end
+
+        function P = monParams(varargin)
+            P = bcp.BmsConfig().monitorParams();
+            for k = 1:2:numel(varargin), P.(varargin{k}) = varargin{k+1}; end
+        end
+
+        function [f, y] = runLimiter(P, n, vmin, ipack, dch_ok)
+        %RUNLIMITER  Drive bcp_load_limiter n times at a fixed operating point.
+        %   Returns the final fraction and the final load command, for a demand
+        %   of exactly 1000 W so the two are trivially comparable.
+            f = NaN; y = NaN;
+            for k = 1:n
+                [y, f] = bcp_load_limiter(1000, vmin, ipack, dch_ok, P);
+            end
         end
 
         function P = chgParams(varargin)
@@ -136,11 +157,17 @@ classdef tBcpAlgorithms < matlab.unittest.TestCase
 
         function bothArrayLayoutsAgree(tc)
         %BOTHARRAYLAYOUTSAGREE  The whole justification for mean()*S and sum()/S.
+        %
+        %   The params come from tc.monParams rather than a struct literal here.
+        %   A literal is a copy of the monitor's parameter list that goes stale
+        %   the next time the monitor gains a field -- which is exactly what
+        %   happened when SOC_clamp was added, and four tests failed on a
+        %   missing field rather than on anything they were testing.
             S = 14; Pp = 5;
             vCell = 3.7; iPackTrue = 20;   % 20 A into the pack
 
             % layout A: one entry per cell, S*P entries
-            Pa = struct('SeriesCount',S, 'I_sign',1, 'SOC_in_percent',false);
+            Pa = tc.monParams('SeriesCount',S, 'I_sign',1);
             mA = bcp_pack_monitor(repmat(vCell,S*Pp,1), repmat(0.5,S*Pp,1), ...
                                   repmat(iPackTrue/Pp,S*Pp,1), Pa);
 
@@ -155,7 +182,7 @@ classdef tBcpAlgorithms < matlab.unittest.TestCase
         end
 
         function currentSignIsConverted(tc)
-            P = struct('SeriesCount',10, 'I_sign',-1, 'SOC_in_percent',false);
+            P = tc.monParams('SeriesCount',10, 'I_sign',-1);
             % A battery model reporting +5 A per element while discharging
             m = bcp_pack_monitor(repmat(3.6,10,1), repmat(0.5,10,1), ...
                                  repmat(5,10,1), P);
@@ -181,7 +208,7 @@ classdef tBcpAlgorithms < matlab.unittest.TestCase
         end
 
         function percentSocIsScaled(tc)
-            P = struct('SeriesCount',4, 'I_sign',1, 'SOC_in_percent',true);
+            P = tc.monParams('SeriesCount',4, 'SOC_in_percent',true);
             m = bcp_pack_monitor(repmat(3.6,4,1), [40;50;60;70], zeros(4,1), P);
             tc.verifyEqual(m(bcp.Signals.SOC_PACK), 0.55, 'AbsTol',1e-9);
             tc.verifyEqual(m(bcp.Signals.SOC_MIN),  0.40, 'AbsTol',1e-9);
@@ -189,7 +216,7 @@ classdef tBcpAlgorithms < matlab.unittest.TestCase
         end
 
         function extremesTrackTheWorstCell(tc)
-            P = struct('SeriesCount',4, 'I_sign',1, 'SOC_in_percent',false);
+            P = tc.monParams('SeriesCount',4);
             m = bcp_pack_monitor([3.5;4.19;3.7;3.6], repmat(0.5,4,1), zeros(4,1), P);
             tc.verifyEqual(m(bcp.Signals.V_MIN), 3.50);
             tc.verifyEqual(m(bcp.Signals.V_MAX), 4.19);
@@ -292,6 +319,431 @@ classdef tBcpAlgorithms < matlab.unittest.TestCase
             tc.verifyEqual(state, 3, 'Negative current is DISCHARGE.');
             [~,~,~,state] = bcp_protection(3.6, 3.7, 25, 0, false, P);
             tc.verifyEqual(state, 1, 'No current is IDLE.');
+        end
+
+        function faultMasksAreSumsNotSeparateCodes(tc)
+        %FAULTMASKSARESUMSNOTSEPARATECODES  Why a run reports 10 and then asks
+        %   what fault code 10 is. It is not a code -- it is 8 + 2.
+        %
+        %   And the ORDER is diagnostic. Over-current confirms in t_i_trip and a
+        %   voltage fault in t_v_trip, so a discharge over-draw big enough to
+        %   also breach the voltage limit shows 8 alone first and picks up the
+        %   2 later. Nothing changed state in between; a slower confirmation
+        %   finished.
+            P = tc.protParams('Ts',0.01, 't_i_trip',0.10, 't_v_trip',0.50, ...
+                'I_dch_peak',300, 'V_uv_trip',2.50, 'AutoRecover',false);
+
+            % 400 A of discharge at 2.4 V/cell: over the fast discharge tier and
+            % under the under-voltage threshold at the same instant.
+            for k = 1:round(0.20/P.Ts)
+                [~,~,~,~,faults] = bcp_protection(2.40, 3.6, 25, -400, false, P);
+            end
+            tc.verifyEqual(faults, 8, ...
+                'At 0.2 s only the fast over-current tier has confirmed.');
+
+            for k = 1:round(0.40/P.Ts)
+                [~,~,~,~,faults] = bcp_protection(2.40, 3.6, 25, -400, false, P);
+            end
+            tc.verifyEqual(faults, 10, ...
+                'By 0.6 s the under-voltage dwell has completed too, and 8+2 = 10.');
+
+            tc.verifyEqual(bcp.Signals.faultBits(10), 'UV + OC_discharge', ...
+                'faultBits is what turns the mask back into words.');
+            tc.verifyEqual(bcp.Signals.faultBits(5), 'OV + OC_charge', ...
+                'The charge-direction equivalent: 4 + 1.');
+        end
+    end
+
+    % =====================================================================
+    methods (Test)   % ---- protection: recovery that cannot re-trip -------
+
+        function underVoltageWillNotClearOnARestAlone(tc)
+        %UNDERVOLTAGEWILLNOTCLEARONARESTALONE  The mechanism that breaks the
+        %   cyclic fault chain at its source.
+        %
+        %   A cell that returns to 3.0 V the instant the load is removed has
+        %   stopped losing energy, not gained any. Recovering on that reading is
+        %   what lets the trip re-arm into the same load, and the next sag is
+        %   deeper because the lap cost charge.
+            P = tc.protParams('t_v_trip',0.1, 't_recover',0.2, ...
+                'AutoRecover',true, 'Q_uv_reset_Ah',0.02);
+            for k = 1:20
+                bcp_protection(2.40, 3.6, 25, -50, false, P);
+            end
+
+            % Resting inside the clear band for fifty times the recovery dwell,
+            % with no current at all. Nothing has been put back.
+            for k = 1:1000
+                [~, ~, dch_ok] = bcp_protection(3.20, 3.6, 25, 0, false, P);
+            end
+            tc.verifyEqual(dch_ok, 0, ...
+                ['A rest is not a recovery. The under-voltage latch must hold ', ...
+                 'until charge has actually gone back in.']);
+        end
+
+        function underVoltageClearsOnceEnoughChargeHasGoneIn(tc)
+        %UNDERVOLTAGECLEARSONCEENOUGHCHARGEHASGONEIN  The other half: the latch
+        %   is not permanent, it is conditional. 10 A for 7.2 s is 0.02 Ah.
+            % The charge trips are raised because this test pushes 10 A in, and
+            % the DEFAULT charge trips are sized for a 14S5P cell pack at 4.35 A.
+            % Leaving them alone latches an over-current-charge fault at 0.1 s and
+            % the test would be measuring that instead.
+            P = tc.protParams('t_v_trip',0.1, 't_recover',0.2, ...
+                'AutoRecover',true, 'Q_uv_reset_Ah',0.02, ...
+                'I_chg_trip',100, 'I_chg_peak',200);
+            for k = 1:20
+                bcp_protection(2.40, 3.6, 25, -50, false, P);
+            end
+
+            n = round(0.02*3600/10 / P.Ts);          % 720 samples at 10 A
+            for k = 1:n-100
+                [~, ~, dch_ok, ~, ~, ~, info] = ...
+                    bcp_protection(3.20, 3.6, 25, 10, false, P);
+            end
+            tc.verifyEqual(dch_ok, 0, 'Short of the requirement it must still hold.');
+            tc.verifyLessThan(info(3), 0.02, ...
+                'info(3) is the Ah counted so far, and it should not be there yet.');
+
+            for k = 1:200
+                [~, ~, dch_ok] = bcp_protection(3.20, 3.6, 25, 10, false, P);
+            end
+            tc.verifyEqual(dch_ok, 1, ...
+                'Past the requirement, with the pack in the clear band, it clears.');
+        end
+
+        function onlyChargeCountsTowardTheUnderVoltageRequirement(tc)
+        %ONLYCHARGECOUNTSTOWARDTHEUNDERVOLTAGEREQUIREMENT  Net would be wrong:
+        %   a pack oscillating around zero current would accumulate credit it
+        %   never earned. The accumulator takes max(I, 0) for that reason.
+            P = tc.protParams('t_v_trip',0.1, 'Q_uv_reset_Ah',0.02, ...
+                'AutoRecover',true, 't_recover',0.2);
+            for k = 1:20, bcp_protection(2.40, 3.6, 25, -50, false, P); end
+            for k = 1:500
+                [~,~,~,~,~,~, info] = bcp_protection(3.20, 3.6, 25, -10, false, P);
+            end
+            tc.verifyEqual(info(3), 0, ...
+                'Discharging while under-voltage must count for nothing.');
+        end
+
+        function eachRecoveryDemandsALongerDwell(tc)
+        %EACHRECOVERYDEMANDSALONGERDWELL  The exponential backoff, read off
+        %   info(4) rather than inferred from timing.
+            P = tc.protParams('t_v_trip',0.1, 't_recover',0.5, ...
+                'AutoRecover',true, 'Retry_Backoff_x',3, ...
+                't_recover_max_s',60, 't_retry_window_s',30, ...
+                'Q_uv_reset_Ah',0, 'V_ov_trip',4.20, 'V_ov_clear',4.10);
+
+            dwell = zeros(3,1);
+            for r = 1:3
+                for k = 1:20, bcp_protection(3.6, 4.30, 25, 0, false, P); end
+                [~,~,~,~,~,~, info] = bcp_protection(3.6, 4.30, 25, 0, false, P);
+                dwell(r) = info(4);
+                % Sit in the clear band long enough for whatever this recovery
+                % now costs, but not long enough to reset the retry counter.
+                for k = 1:round(min(info(4)+0.5, 25)/P.Ts)
+                    bcp_protection(3.6, 3.60, 25, 0, false, P);
+                end
+            end
+
+            tc.verifyEqual(dwell(1), 0.5, 'AbsTol', 1e-9, ...
+                'The first recovery costs t_recover.');
+            tc.verifyEqual(dwell(2), 1.5, 'AbsTol', 1e-9, ...
+                'The second costs Retry_Backoff_x times that.');
+            tc.verifyEqual(dwell(3), 4.5, 'AbsTol', 1e-9, ...
+                'And the third again -- each lap of a cycle gets slower.');
+        end
+
+        function enoughRetriesWithdrawsAutoRecovery(tc)
+        %ENOUGHRETRIESWITHDRAWSAUTORECOVERY  Past N_retry_max the pack stops
+        %   reconnecting itself, reports state 5, and waits for a human.
+            P = tc.protParams('t_v_trip',0.1, 't_recover',0.2, ...
+                'AutoRecover',true, 'Retry_Backoff_x',1, 'N_retry_max',2, ...
+                't_retry_window_s',1000, 'Q_uv_reset_Ah',0, ...
+                'V_ov_trip',4.20, 'V_ov_clear',4.10);
+
+            for r = 1:3
+                for k = 1:20, bcp_protection(3.6, 4.30, 25, 0, false, P); end
+                for k = 1:60,  bcp_protection(3.6, 3.60, 25, 0, false, P); end
+            end
+            for k = 1:20, bcp_protection(3.6, 4.30, 25, 0, false, P); end
+            for k = 1:500
+                [~, chg_ok, ~, state, ~, ~, info] = ...
+                    bcp_protection(3.6, 3.60, 25, 0, false, P);
+            end
+            tc.verifyEqual(info(2), 1, 'The lockout latch must be set.');
+            tc.verifyEqual(state, 5, ...
+                'And state must say LOCKOUT rather than FAULT, so it is visible.');
+            tc.verifyEqual(chg_ok, 0, ...
+                'A lockout is still a latched fault: no automatic clearing.');
+
+            % A reset edge answers the lockout, the backoff and the charge
+            % requirement -- but not the clear band, which is already satisfied.
+            bcp_protection(3.6, 3.60, 25, 1, true, P);
+            [~, chg_ok, ~, ~, ~, ~, info] = ...
+                bcp_protection(3.6, 3.60, 25, 1, true, P);
+            tc.verifyEqual(chg_ok, 1, 'A reset edge must clear a lockout.');
+            tc.verifyEqual(info(1), 0, 'and reset the retry counter with it.');
+        end
+
+        function theRetryCounterResetsAfterACleanSpell(tc)
+        %THERETRYCOUNTERRESETSAFTERACLEANSPELL  Otherwise two unrelated faults
+        %   an hour apart would eventually lock out a healthy pack.
+            P = tc.protParams('t_v_trip',0.1, 't_recover',0.2, ...
+                'AutoRecover',true, 'Retry_Backoff_x',3, ...
+                't_retry_window_s',2.0, 'Q_uv_reset_Ah',0, ...
+                'V_ov_trip',4.20, 'V_ov_clear',4.10);
+
+            for k = 1:20, bcp_protection(3.6, 4.30, 25, 0, false, P); end
+            for k = 1:50, bcp_protection(3.6, 3.60, 25, 0, false, P); end
+            [~,~,~,~,~,~, info] = bcp_protection(3.6, 3.60, 25, 0, false, P);
+            tc.verifyEqual(info(1), 1, 'One recovery, so one retry counted.');
+
+            for k = 1:400, bcp_protection(3.6, 3.60, 25, 0, false, P); end
+            [~,~,~,~,~,~, info] = bcp_protection(3.6, 3.60, 25, 0, false, P);
+            tc.verifyEqual(info(1), 0, ...
+                'After t_retry_window_s of running clean, the count is stale.');
+        end
+
+        function aCleanSpellAlsoForgivesTheLockout(tc)
+        %ACLEANSPELLALSOFORGIVESTHELOCKOUT  The lockout is armed one sample AFTER
+        %   the Nth successful clear, so there is a moment when nothing is
+        %   latched and it is already set. If a clean retry window does not clear
+        %   it too, a pack that recovered N times, then ran perfectly for the
+        %   whole window, is refused its next automatic recovery for the rest of
+        %   the run -- for a fault it demonstrably recovered from.
+        %
+        %   This cannot be exploited by a pack that is genuinely cycling: a
+        %   locked-out fault holds the latch, which pins the clean-time counter
+        %   at zero, so the window never expires while it matters.
+            P = tc.protParams('t_v_trip',0.1, 't_recover',0.2, ...
+                'AutoRecover',true, 'Retry_Backoff_x',1, 'N_retry_max',2, ...
+                't_retry_window_s',1.0, 'Q_uv_reset_Ah',0, ...
+                'V_ov_trip',4.20, 'V_ov_clear',4.10);
+
+            % Two recoveries back to back, which arms the lockout.
+            for r = 1:2
+                for k = 1:20, bcp_protection(3.6, 4.30, 25, 0, false, P); end
+                for k = 1:40, bcp_protection(3.6, 3.60, 25, 0, false, P); end
+            end
+            [~,~,~,~,~,~, info] = bcp_protection(3.6, 3.60, 25, 0, false, P);
+            tc.verifyEqual(info(2), 1, ...
+                'Precondition: two recoveries at N_retry_max = 2 arms the lockout.');
+
+            % Now run clean for longer than the window.
+            for k = 1:200, bcp_protection(3.6, 3.60, 25, 0, false, P); end
+            [~,~,~,~,~,~, info] = bcp_protection(3.6, 3.60, 25, 0, false, P);
+            tc.verifyEqual(info(2), 0, ...
+                'A clean retry window must clear the lockout as well as the count.');
+
+            % ...and the next fault recovers automatically again.
+            for k = 1:20, bcp_protection(3.6, 4.30, 25, 0, false, P); end
+            for k = 1:60
+                [~, chg_ok, ~, state] = bcp_protection(3.6, 3.60, 25, 0, false, P);
+            end
+            tc.verifyEqual(chg_ok, 1, ...
+                'The forgiven pack must be allowed to recover on its own again.');
+            tc.verifyNotEqual(state, 5, 'and must not report LOCKOUT.');
+        end
+    end
+
+    % =====================================================================
+    methods (Test)   % ---- load limiter ------------------------------------
+
+        function limiterPassesTheDemandWhenThereIsMargin(tc)
+            P = tc.limParams();
+            [~, f] = bcp_load_limiter(1000, 3.60, -20, 1, P);
+            tc.verifyEqual(f, 1, ...
+                'With the pack nowhere near a limit, nothing should be derated.');
+        end
+
+        function voltageFoldbackClosesTheLimit(tc)
+        %VOLTAGEFOLDBACKCLOSESTHELIMIT  Below V_fold_end the limit closes, and
+        %   the load command follows it down.
+            P = tc.limParams();
+            f0 = tc.runLimiter(P, 1,  P.V_fold_end - 0.05, -200, 1);
+            f1 = tc.runLimiter(P, 50, P.V_fold_end - 0.05, -200, 1);
+            tc.verifyLessThan(f1, f0, 'The limit must close while the cell is low.');
+            [y, f] = bcp_load_limiter(1000, P.V_fold_end - 0.05, -200, 1, P);
+            tc.verifyEqual(y, 1000*f, 'AbsTol', 1e-12, ...
+                'And the command must be exactly the fraction times the demand.');
+        end
+
+        function theRateOfClosingScalesWithHowFarOutsideTheBand(tc)
+        %THERATEOFCLOSINGSCALESWITHHOWFAROUTSIDETHEBAND  A proportional rate,
+        %   capped -- which is what makes the loop stable near the pack's
+        %   maximum power point, where dV/dP is unbounded.
+            P = tc.limParams();
+            n = 3;              % short enough that nothing reaches Fold_Floor
+            near = 1 - tc.runLimiter(P, n, P.V_fold_end - 0.01, -200, 1);
+            clear bcp_load_limiter
+            far  = 1 - tc.runLimiter(P, n, P.V_fold_end - 0.50, -200, 1);
+            tc.verifyGreaterThan(far, 3*near, ...
+                'Deeper below the band must close the limit substantially faster.');
+
+            % ...but never faster than the cap, however absurd the error. This is
+            % the property the stability argument rests on: the step per sample
+            % is bounded by rate*Ts whatever dV/dP has become.
+            clear bcp_load_limiter
+            capped = 1 - tc.runLimiter(P, n, P.V_fold_end - 50, -200, 1);
+            tc.verifyEqual(capped, far, 'AbsTol', 1e-12, ...
+                'A hundredfold larger error must not close the limit any faster.');
+            tc.verifyEqual(capped, n * P.Fold_Fall_per_s * P.Ts, 'AbsTol', 1e-12, ...
+                'and the cap is exactly Fold_Fall_per_s.');
+        end
+
+        function theLimitHoldsStillInsideTheDeadband(tc)
+        %THELIMITHOLDSSTILLINSIDETHEDEADBAND  What stops the integrator hunting.
+            P = tc.limParams();
+            tc.runLimiter(P, 10, P.V_fold_end - 0.05, -200, 1);     % close it to about 0.5
+            mid = 0.5*(P.V_fold_end + P.V_fold_start);
+            fa = tc.runLimiter(P, 1,   mid, -200, 1);
+            fb = tc.runLimiter(P, 500, mid, -200, 1);
+            tc.verifyEqual(fb, fa, 'AbsTol', 1e-12, ...
+                'Between the two thresholds the limit must not move at all.');
+        end
+
+        function theLimitReopensOnlyWhileCurrentIsFlowing(tc)
+        %THELIMITREOPENSONLYWHILECURRENTISFLOWING  An open-circuit voltage is
+        %   not evidence the pack can deliver power -- it is exactly the reading
+        %   that misled the bang-bang trip.
+            P = tc.limParams();
+            tc.runLimiter(P, 10, P.V_fold_end - 0.05, -200, 1);
+            atRest = tc.runLimiter(P, 500, 4.00, 0, 1);
+            tc.verifyLessThan(atRest, 0.99, ...
+                'A relaxed cell at zero current must not reopen the limit.');
+
+            underLoad = tc.runLimiter(P, 500, 4.00, -2*P.I_learn_A, 1);
+            tc.verifyGreaterThan(underLoad, atRest, ...
+                'With current actually flowing, the limit reopens.');
+        end
+
+        function chargingAlsoCountsAsEvidence(tc)
+        %CHARGINGALSOCOUNTSASEVIDENCE  Charge is replacing what the load took,
+        %   so it is a reason to reopen. This is what stops a limit that closed
+        %   near empty from staying closed after the pack is topped back up.
+            P = tc.limParams();
+            tc.runLimiter(P, 10, P.V_fold_end - 0.05, -200, 1);
+            before = tc.runLimiter(P, 1,   4.00, 2*P.I_learn_A, 1);
+            after  = tc.runLimiter(P, 300, 4.00, 2*P.I_learn_A, 1);
+            tc.verifyGreaterThan(after, before, ...
+                'Positive current must reopen the limit as readily as negative.');
+        end
+
+        function closingIsFasterThanReopening(tc)
+            P = tc.limParams();
+            tc.verifyGreaterThan(P.Fold_Fall_per_s, P.Fold_Rise_per_s, ...
+                ['Cells sag in milliseconds and recover over seconds. A limiter ', ...
+                 'that reopened as fast as it closed is the trip again.']);
+        end
+
+        function currentFoldbackIsKeyedToTheFastTier(tc)
+        %CURRENTFOLDBACKISKEYEDTOTHEFASTTIER  Not the sustained tier: that one
+        %   exists to be exceeded briefly by a pulse the pack is rated for, so
+        %   folding back against it would derate the designed test.
+            b = bcp.BmsConfig();
+            P = b.limiterParams();
+            tc.verifyEqual(P.I_fold_end, b.I_dch_peak_A, ...
+                'Full derate must coincide with the FAST trip, not the sustained one.');
+            tc.verifyGreaterThan(P.I_fold_start, b.I_dch_trip, ...
+                ['Current foldback must start above the sustained trip, or every ', ...
+                 'rated pulse is derated.']);
+
+            % Above the start point the limit closes even with the voltage fine.
+            f = tc.runLimiter(P, 100, 3.60, -(P.I_fold_end + 10), 1);
+            tc.verifyLessThan(f, 0.99, ...
+                'Past the fast tier the current margin must close the limit.');
+        end
+
+        function inhibitFreezesTheLimitRatherThanResettingIt(tc)
+        %INHIBITFREEZESTHELIMITRATHERTHANRESETTINGIT  The pre-trip limit was
+        %   demonstrably too high, and that is the one useful thing the failed
+        %   attempt established. Throwing it away on recovery restarts the cycle.
+            P = tc.limParams();
+            held = tc.runLimiter(P, 10, P.V_fold_end - 0.05, -200, 1);
+            tc.verifyLessThan(held, 0.99, 'Precondition: the limit closed.');
+
+            for k = 1:200
+                [y, f] = bcp_load_limiter(1000, 4.00, 0, 0, P);
+            end
+            tc.verifyEqual(y, 0, 'An inhibit means zero load, whatever the limit is.');
+            tc.verifyEqual(f, 0, 'and dcl_frac reports zero, not the frozen value.');
+
+            [~, ~, ~, fold] = bcp_load_limiter(1000, 4.00, 0, 0, P);
+            tc.verifyEqual(fold, held, 'AbsTol', 1e-9, ...
+                'But the underlying limit must be frozen at what it had learned.');
+        end
+
+        function softStartRampsTheLoadBackAfterAnInhibit(tc)
+            P = tc.limParams('t_softstart_s',0.5);
+            bcp_load_limiter(1000, 4.00, 0, 0, P);          % inhibited
+            [~, f1, st] = bcp_load_limiter(1000, 4.00, 0, 1, P);
+            tc.verifyLessThan(f1, 0.1, ...
+                'The first sample after permission returns must be near zero.');
+            tc.verifyEqual(st, 3, 'and limit_state must say soft-start.');
+
+            for k = 1:round(P.t_softstart_s/P.Ts) + 5
+                [~, f2] = bcp_load_limiter(1000, 4.00, 0, 1, P);
+            end
+            tc.verifyEqual(f2, 1, 'AbsTol', 1e-9, ...
+                'and the ramp must reach full demand in t_softstart_s.');
+        end
+
+        function limitStateNamesTheBindingConstraint(tc)
+            P = tc.limParams('t_softstart_s',0);
+            [~,~,st] = bcp_load_limiter(1000, 3.60, -20, 1, P);
+            tc.verifyEqual(st, 0, 'Nothing binding.');
+            [~,~,st] = bcp_load_limiter(1000, 3.60, -20, 0, P);
+            tc.verifyEqual(st, 4, 'Held off by protection.');
+            tc.verifyEqual(bcp.Signals.limitState(1), 'voltage foldback');
+            tc.verifyEqual(bcp.Signals.limitState(2), 'current foldback');
+        end
+
+        function disablingTheLimiterRestoresTheOldHardGate(tc)
+        %DISABLINGTHELIMITERRESTORESTHEOLDHARDGATE  Bit for bit, because it is
+        %   the configuration every result from before the limiter was produced
+        %   under, and a reproduction that is nearly the same is not one.
+            P = tc.limParams('Enabled',false);
+            for k = 1:200
+                [y, f, st] = bcp_load_limiter(1000, 1.00, -1e6, 1, P);
+            end
+            tc.verifyEqual(y, 1000, ...
+                'Disabled, the demand passes untouched however bad the pack looks.');
+            tc.verifyEqual(f, 1);
+            tc.verifyEqual(st, 0);
+
+            [y, f, st] = bcp_load_limiter(1000, 3.60, -20, 0, P);
+            tc.verifyEqual(y, 0, 'And the inhibit is still a hard gate.');
+            tc.verifyEqual(f, 0);
+            tc.verifyEqual(st, 4);
+        end
+    end
+
+    % =====================================================================
+    methods (Test)   % ---- SOC clamping ------------------------------------
+
+        function negativeSocIsClampedButStillReported(tc)
+        %NEGATIVESOCISCLAMPEDBUTSTILLREPORTED  A Simscape table_battery
+        %   integrates coulombs with no floor, so a pack taken past empty
+        %   reports a negative SOC indefinitely. Every SOC comparison in this
+        %   package is written against 0..1, so the clamp is load-bearing -- and
+        %   the raw value has to survive it or the modelling problem is hidden.
+            P = tc.monParams('SeriesCount',3, 'I_sign',1, 'SOC_clamp',true);
+            [meas, raw] = bcp_pack_monitor([3.2;3.2;3.2], [-0.004;0.01;0.02], ...
+                                           [-5;-5;-5], P);
+            tc.verifyEqual(meas(bcp.Signals.SOC_MIN), 0, ...
+                'The reported minimum must be clamped to zero.');
+            tc.verifyEqual(raw(1), -0.004, 'AbsTol', 1e-12, ...
+                'and the unclamped value must still be published.');
+            tc.verifyGreaterThanOrEqual(meas(bcp.Signals.SOC_PACK), 0, ...
+                'The mean must be computed from clamped values, not clamped after.');
+        end
+
+        function socClampCanBeTurnedOff(tc)
+            P = tc.monParams('SeriesCount',3, 'SOC_clamp',false);
+            meas = bcp_pack_monitor([3.2;3.2;3.2], [-0.004;0.01;0.02], ...
+                                    [-5;-5;-5], P);
+            tc.verifyEqual(meas(bcp.Signals.SOC_MIN), -0.004, 'AbsTol', 1e-12, ...
+                'Off, the battery model''s value passes through untouched.');
         end
     end
 

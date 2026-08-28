@@ -73,6 +73,23 @@ classdef BmsConfig
 
         SOC_in_percent logical = false  % true if the SOC array is 0..100
 
+        SOC_clamp logical = true
+        %  Clamp the SOC the BMS reports to [0, 1].
+        %
+        %  Leave it on. A Simscape table_battery integrates coulombs with no
+        %  floor, so a pack discharged past its rated capacity reports a
+        %  NEGATIVE state of charge and goes on doing so indefinitely -- the
+        %  component clamps its OCV and resistance TABLES at the ends (the
+        %  generated code sets extrapolation_option = nearest) but not the
+        %  integrator. That is the battery model behaving as designed, not a
+        %  BMS fault, and alg/bcp_pack_monitor.m explains it in full.
+        %
+        %  Every SOC comparison in this package -- SOC_stop, SOC_restart, the
+        %  arbiter's completion latch -- is written against a 0..1 quantity, so
+        %  the clamp is what keeps them meaning something. The unclamped
+        %  extremes are still published, on diag(17), so the excursion is
+        %  visible rather than absorbed.
+
         % --- protection: voltage ---------------------------------------------
         V_ov_trip  double = 4.25   % per-cell over-voltage trip [V]
         %  ABOVE the cell's 4.20 V charge cutoff on purpose, and this is not a
@@ -134,6 +151,110 @@ classdef BmsConfig
         AutoRecover logical = true % false = latch until the reset port is pulsed
         t_recover   double  = 2.0  % dwell inside the clear band before recovery [s]
         UseResetPort logical = false % add a reset inport (else an internal 0)
+
+        % --- fault handling: stopping a recovered fault from re-tripping -------
+        %  A fault whose cause the protection layer CURES by acting on it will
+        %  re-trip the moment it recovers, and under-voltage under a load is
+        %  exactly that: the sag is the load, so inhibiting the load removes the
+        %  sag, the pack reads clear, the fault recovers, the load returns and
+        %  the sag comes back deeper -- because the lap took charge out and put
+        %  none back. alg/bcp_protection.m derives the cycle in full.
+        %
+        %  These four are what protection contributes to breaking it. The main
+        %  answer is UseLoadLimiter below, which stops the trip firing at all.
+
+        Q_uv_reset_Ah double = 0.02
+        %  Amp-hours of NET CHARGE the pack must take on before an under-voltage
+        %  latch may clear. Resting is not recovery: a cell that returns to
+        %  3.0 V when the load is removed has stopped losing energy, not gained
+        %  any, and it is still at its end of discharge. Only positive current
+        %  counts and the accumulator resets with the latch.
+        %
+        %  ON A LOAD-ONLY RUN THIS MAKES THE UV LATCH PERMANENT, which is the
+        %  correct end of a discharge test but does mean no more load current
+        %  from that point. Set it to 0 for the old rest-is-enough behaviour.
+        %  fromPack() sizes it at 0.5% of pack capacity.
+
+        Retry_Backoff_x double = 3.0
+        %  Each automatic recovery multiplies the required clear-band dwell by
+        %  this. First recovery needs t_recover, second 3x that, third 9x,
+        %  capped at t_recover_max_s. A fault retry counter with exponential
+        %  backoff, as on any device that reconnects itself to a load. Whatever
+        %  oscillation survives everything else gets slower each lap instead of
+        %  faster. 1.0 disables the escalation.
+
+        t_recover_max_s double = 60.0  % ceiling on the backed-off dwell [s]
+
+        t_retry_window_s double = 30.0
+        %  Run this long with nothing latched and the retry counter resets. It
+        %  measures time spent RUNNING CLEAN, which is the only reading that
+        %  means what the counter is for.
+
+        N_retry_max double = 3
+        %  Automatic recoveries allowed before auto-recovery is withdrawn
+        %  entirely. Past this, only a reset edge clears anything and state
+        %  reports 5 (LOCKOUT) rather than 4 (FAULT). A pack that has faulted,
+        %  recovered and faulted again three times in half a minute does not
+        %  have three faults -- it has one that recovery does not fix, and
+        %  reconnecting it again is how a run produces an hour of uninterpretable
+        %  trace. Inf leaves only the backoff; 0 makes the first fault terminal.
+
+        % --- continuous discharge limiting (the load limiter) ------------------
+        UseLoadLimiter logical = true
+        %  Derate the load continuously as the pack approaches its limits,
+        %  instead of leaving the trip to do the regulating. This is the
+        %  discharge current/power limit a production BMS publishes -- DCL on
+        %  most CAN protocols -- and it is what keeps protection a backstop.
+        %  alg/bcp_load_limiter.m is the whole argument; false restores the old
+        %  hard-gate behaviour exactly, for reproducing an earlier result.
+
+        V_fold_margin_V double = 0.08
+        %  Foldback reaches full derate this far ABOVE V_uv_trip. The limiter
+        %  regulates the lowest cell into a band just above the trip, so the
+        %  margin is what the trip gets to keep for itself.
+
+        V_fold_band_V double = 0.20
+        %  Width of the foldback band above that. Full load is permitted at
+        %  V_uv_trip + V_fold_margin_V + V_fold_band_V and above; the limiter
+        %  holds still anywhere inside the band, which is what stops it hunting.
+        %  Widen it if the load is derated earlier than you want, but keep the
+        %  design pulse's worst-case sag above the top of the band or the test
+        %  is being limited rather than run.
+
+        I_fold_frac double = 0.90
+        %  Current foldback starts at this fraction of I_dch_peak_A and reaches
+        %  full derate at I_dch_peak_A. It is deliberately keyed to the FAST
+        %  tier, not the sustained one: the sustained tier exists to be exceeded
+        %  briefly by a pulse the pack is rated for, so folding back against it
+        %  would derate the designed test.
+
+        Fold_Fall_per_s double = 20.0  % fastest the limit closes  [fraction/s]
+        Fold_Rise_per_s double = 0.25  % rate the limit reopens    [fraction/s]
+        %  Falling is eighty times faster than rising, and the asymmetry is the
+        %  point. Cells sag in milliseconds and recover over seconds; a limiter
+        %  that reopened as fast as it closed would be the trip again with extra
+        %  steps. The fall rate is a CAP -- the actual rate is proportional to
+        %  how far outside the band the pack is -- so the limit stops moving as
+        %  soon as it has done enough.
+
+        Fold_Floor double = 0.0
+        %  Smallest fraction of the demand the limiter will allow. 0 lets it
+        %  take the load to zero, which is still better than a trip: no latch,
+        %  no contactor event, and it reopens on its own.
+
+        Fold_Learn_frac double = 0.10
+        %  The limit only reopens while |I_pack| exceeds this fraction of the
+        %  current-foldback start point. At rest the lowest cell relaxes to OCV,
+        %  far above the band, and reopening on that reading would arrive at the
+        %  next pulse having forgotten what the last one proved. Current flowing
+        %  -- load or charge -- is the evidence; open-circuit voltage is not.
+
+        t_softstart_s double = 0.50
+        %  Re-engage the load over this long after a discharge inhibit clears,
+        %  rather than in one sample. An inverter soft-starts for exactly this
+        %  reason, and in simulation a step re-engagement is the surest way back
+        %  under the threshold before the limiter has had a sample to react.
+        %  0 disables it.
 
         % --- load / charge arbitration ------------------------------------------
         UseCharger logical = true
@@ -224,6 +345,59 @@ classdef BmsConfig
             assert(obj.t_quiet_s >= 0, 'bcp:BmsConfig:Quiet', ...
                 't_quiet_s must be >= 0.');
 
+            % --- fault recovery / retry escalation ---------------------------
+            assert(obj.Q_uv_reset_Ah >= 0, 'bcp:BmsConfig:UVReset', ...
+                'Q_uv_reset_Ah must be >= 0 (0 disables the charge requirement).');
+            assert(obj.Retry_Backoff_x >= 1, 'bcp:BmsConfig:Backoff', ...
+                ['Retry_Backoff_x (%g) must be >= 1. Below 1 each recovery would ', ...
+                 'be EASIER than the last, which is the runaway it exists to ', ...
+                 'stop. 1.0 disables the escalation.'], obj.Retry_Backoff_x);
+            assert(obj.t_recover_max_s >= obj.t_recover, 'bcp:BmsConfig:RecoverMax', ...
+                ['t_recover_max_s (%g s) must be at least t_recover (%g s), or the ', ...
+                 'cap is below the first dwell and the backoff never happens.'], ...
+                obj.t_recover_max_s, obj.t_recover);
+            assert(obj.t_retry_window_s > 0, 'bcp:BmsConfig:RetryWindow', ...
+                't_retry_window_s must be positive.');
+            assert(obj.N_retry_max >= 0, 'bcp:BmsConfig:RetryMax', ...
+                'N_retry_max must be >= 0 (0 = the first fault is terminal).');
+
+            % --- load limiter ------------------------------------------------
+            assert(obj.V_fold_margin_V >= 0, 'bcp:BmsConfig:Fold', ...
+                'V_fold_margin_V must be >= 0.');
+            assert(obj.V_fold_band_V > 0, 'bcp:BmsConfig:Fold', ...
+                ['V_fold_band_V must be positive. A zero-width band makes the ', ...
+                 'foldback a comparator with no deadband, and it hunts.']);
+            assert(obj.V_fold_end() > obj.V_uv_trip, 'bcp:BmsConfig:FoldBelowTrip', ...
+                ['Foldback reaches full derate at %.3f V but the under-voltage trip ', ...
+                 'is at %.3f V. The limiter has to get there FIRST or it does ', ...
+                 'nothing except slow down a trip that still fires. Raise ', ...
+                 'V_fold_margin_V.'], obj.V_fold_end(), obj.V_uv_trip);
+            if obj.UseLoadLimiter && obj.V_fold_start() >= obj.V_uv_clear
+                warning('bcp:BmsConfig:FoldAboveClear', ...
+                    ['Foldback starts at %.3f V, at or above the under-voltage ', ...
+                     'CLEAR threshold of %.3f V, so the load is being derated in ', ...
+                     'a band the pack is considered recovered in. Legal, but the ', ...
+                     'two thresholds are describing different things and one of ', ...
+                     'them is probably not what you meant.'], ...
+                    obj.V_fold_start(), obj.V_uv_clear);
+            end
+            assert(obj.I_fold_frac > 0 && obj.I_fold_frac <= 1, ...
+                'bcp:BmsConfig:Fold', 'I_fold_frac must lie in (0, 1].');
+            assert(obj.Fold_Fall_per_s > 0 && obj.Fold_Rise_per_s > 0, ...
+                'bcp:BmsConfig:Fold', ...
+                'Fold_Fall_per_s and Fold_Rise_per_s must both be positive.');
+            assert(obj.Fold_Fall_per_s >= obj.Fold_Rise_per_s, ...
+                'bcp:BmsConfig:FoldAsymmetry', ...
+                ['The limit must close at least as fast as it reopens (fall %g/s, ', ...
+                 'rise %g/s). Reopening faster than closing is the bang-bang trip ', ...
+                 'with extra steps.'], obj.Fold_Fall_per_s, obj.Fold_Rise_per_s);
+            assert(obj.Fold_Floor >= 0 && obj.Fold_Floor < 1, ...
+                'bcp:BmsConfig:Fold', 'Fold_Floor must lie in [0, 1).');
+            assert(obj.Fold_Learn_frac >= 0, 'bcp:BmsConfig:Fold', ...
+                'Fold_Learn_frac must be >= 0.');
+            assert(obj.t_softstart_s >= 0, 'bcp:BmsConfig:SoftStart', ...
+                't_softstart_s must be >= 0 (0 disables the ramp).');
+
             if ~obj.AutoRecover && ~obj.UseResetPort
                 warning('bcp:BmsConfig:NoRecovery', ...
                     ['AutoRecover is off and there is no reset port, so the first ', ...
@@ -298,6 +472,16 @@ classdef BmsConfig
             obj.I_dch_trip   = round(spec.I_dch_A       * 1.10, 1);
             obj.I_dch_peak_A = round(spec.I_dch_pulse_A * 1.10, 1);
 
+            % --- under-voltage recovery ----------------------------------------
+            %  Half a percent of pack capacity. Enough that recovery costs a
+            %  real charge rather than a rest -- at the datasheet standard charge
+            %  that is on the order of twenty seconds, which no re-trip cycle
+            %  can outrun -- and small enough that a pack with a working charger
+            %  gets going again without a human. Scaled with capacity because a
+            %  fixed 20 mAh means something quite different on a 4.5 Ah cell and
+            %  on a 200 Ah one.
+            obj.Q_uv_reset_Ah = round(0.005 * spec.Q_Ah, 4);
+
             % --- temperature ----------------------------------------------------
             %  Straight off the datasheet operating ranges. The cold-charge
             %  inhibit is the low end of the CHARGE range, which is the limit
@@ -309,6 +493,35 @@ classdef BmsConfig
             obj.T_ut_trip   = c.T_chg_min_C;
 
             obj = obj.validate();
+        end
+
+        % -----------------------------------------------------------------
+        %  The four foldback thresholds are DERIVED, never stored. A stored
+        %  copy is a copy that survives a change to V_uv_trip or I_dch_peak_A
+        %  and then folds back against a limit the pack no longer has.
+        function v = V_fold_end(obj)
+        %V_FOLD_END  Cell voltage at which the load is fully derated [V].
+            v = obj.V_uv_trip + obj.V_fold_margin_V;
+        end
+
+        function v = V_fold_start(obj)
+        %V_FOLD_START  Cell voltage above which the load runs unlimited [V].
+            v = obj.V_fold_end() + obj.V_fold_band_V;
+        end
+
+        function i = I_fold_end(obj)
+        %I_FOLD_END  Discharge current at which the load is fully derated [A].
+            i = obj.I_dch_peak_A;
+        end
+
+        function i = I_fold_start(obj)
+        %I_FOLD_START  Discharge current at which current foldback begins [A].
+            i = obj.I_fold_frac * obj.I_dch_peak_A;
+        end
+
+        function i = I_learn_A(obj)
+        %I_LEARN_A  Current below which the limit is frozen rather than reopened [A].
+            i = obj.Fold_Learn_frac * obj.I_fold_start();
         end
 
         function P = protectionParams(obj)
@@ -323,7 +536,28 @@ classdef BmsConfig
                 't_i_trip',    obj.t_i_trip,   't_i_cont',   obj.t_i_cont_s, ...
                 'T_ot_trip',   obj.T_ot_trip,  'T_ot_clear', obj.T_ot_clear, ...
                 'T_ut_trip',   obj.T_ut_trip,  't_T_trip',   obj.t_T_trip, ...
-                'AutoRecover', obj.AutoRecover, 't_recover',  obj.t_recover);
+                'AutoRecover', obj.AutoRecover, 't_recover',  obj.t_recover, ...
+                'Q_uv_reset_Ah',    obj.Q_uv_reset_Ah, ...
+                'Retry_Backoff_x',  obj.Retry_Backoff_x, ...
+                't_recover_max_s',  obj.t_recover_max_s, ...
+                't_retry_window_s', obj.t_retry_window_s, ...
+                'N_retry_max',      obj.N_retry_max);
+        end
+
+        function P = limiterParams(obj)
+        %LIMITERPARAMS  Flatten to the struct bcp_load_limiter expects.
+            P = struct( ...
+                'Ts',              obj.Ts, ...
+                'Enabled',         obj.UseLoadLimiter, ...
+                'V_fold_end',      obj.V_fold_end(), ...
+                'V_fold_start',    obj.V_fold_start(), ...
+                'I_fold_start',    obj.I_fold_start(), ...
+                'I_fold_end',      obj.I_fold_end(), ...
+                'Fold_Fall_per_s', obj.Fold_Fall_per_s, ...
+                'Fold_Rise_per_s', obj.Fold_Rise_per_s, ...
+                'Fold_Floor',      obj.Fold_Floor, ...
+                'I_learn_A',       obj.I_learn_A(), ...
+                't_softstart_s',   obj.t_softstart_s);
         end
 
         function P = arbiterParams(obj)
@@ -345,7 +579,8 @@ classdef BmsConfig
             P = struct( ...
                 'SeriesCount',    obj.SeriesCount, ...
                 'I_sign',         obj.I_sign, ...
-                'SOC_in_percent', obj.SOC_in_percent);
+                'SOC_in_percent', obj.SOC_in_percent, ...
+                'SOC_clamp',      obj.SOC_clamp);
         end
 
         function report(obj)
@@ -357,6 +592,33 @@ classdef BmsConfig
                 obj.I_chg_trip, obj.t_i_cont_s, obj.I_chg_peak_A, obj.t_i_trip);
             fprintf('     discharge trips: %.1f A held %.1f s   |  %.1f A held %.2f s\n', ...
                 obj.I_dch_trip, obj.t_i_cont_s, obj.I_dch_peak_A, obj.t_i_trip);
+            if obj.UseLoadLimiter
+                fprintf(['     load limiter: full load above %.3f V/cell, zero at ', ...
+                         '%.3f V/cell\n'], obj.V_fold_start(), obj.V_fold_end());
+                fprintf(['                   current foldback %.1f A -> %.1f A; ', ...
+                         'closes %.1f/s, reopens %.2f/s\n'], ...
+                    obj.I_fold_start(), obj.I_fold_end(), ...
+                    obj.Fold_Fall_per_s, obj.Fold_Rise_per_s);
+                fprintf('                   soft-start %.2f s after a discharge inhibit\n', ...
+                    obj.t_softstart_s);
+            else
+                fprintf(['     load limiter: OFF -- the trip is the operating limit, ', ...
+                         'and will chatter\n']);
+            end
+            fprintf('     fault recovery: %.1f s dwell', obj.t_recover);
+            if obj.Retry_Backoff_x > 1
+                fprintf(', x%.1f per retry, capped at %.0f s', ...
+                    obj.Retry_Backoff_x, obj.t_recover_max_s);
+            end
+            if isfinite(obj.N_retry_max)
+                fprintf('; lockout after %g retries in %.0f s', ...
+                    obj.N_retry_max, obj.t_retry_window_s);
+            end
+            fprintf('\n');
+            if obj.Q_uv_reset_Ah > 0
+                fprintf(['                     UV clears only after %.4f Ah of ', ...
+                         'charge goes back in\n'], obj.Q_uv_reset_Ah);
+            end
             if obj.ChargeEnabled
                 if obj.AllowConcurrent
                     pri = sprintf('concurrent, charge derated to %.1f A under load', ...

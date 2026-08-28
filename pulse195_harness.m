@@ -18,10 +18,15 @@ function [ok, T, S, out, p] = pulse195_harness(varargin)
 %     Period_s    pulse repetition period [s].   Default 60.
 %     StopTime_s  simulation length [s].         Default 5 periods + 10.
 %     SOC_init    starting SOC of the stand-in.  Default 0.60.
+%     Edge_s      pulse rise/fall time [s].      Default 0.05; see
+%                 pulse195_setup section 6 for why it is not zero.
+%     LimiterOn   continuous discharge limiting. Default true. Set it false to
+%                 reproduce a result from before alg/bcp_load_limiter.m existed.
 %     Plot        draw the four-panel figure.    Default false.
 
 opt = struct('Period_s',60, 'StopTime_s',[], 'SOC_init',0.60, 'Plot',false, ...
-             'Pulse_s',2, 'P_load_W',31250, 'Start_s',5);
+             'Pulse_s',2, 'P_load_W',31250, 'Start_s',5, 'Edge_s',0.05, ...
+             'LimiterOn',true);
 for k = 1:2:numel(varargin)
     assert(isfield(opt, varargin{k}), 'pulse195:Option', 'Unknown option "%s".', varargin{k});
     opt.(varargin{k}) = varargin{k+1};
@@ -31,7 +36,10 @@ if isempty(opt.StopTime_s)
 end
 
 [p, ct] = pulse195_setup('Period_s',opt.Period_s, 'Pulse_s',opt.Pulse_s, ...
-                         'P_load_W',opt.P_load_W, 'Start_s',opt.Start_s);
+                         'P_load_W',opt.P_load_W, 'Start_s',opt.Start_s, ...
+                         'Edge_s',opt.Edge_s);
+p.Bms.UseLoadLimiter = opt.LimiterOn;
+p = p.sync();
 p.report();
 
 h = bcp.Harness(p, 'CellTables', ct, 'SOC_init', opt.SOC_init);
@@ -40,7 +48,8 @@ out = h.simulate(opt.StopTime_s);
 h.summary(out);
 
 [ok, T, S] = pulse195_verify(out, p, ct, 'Period_s',opt.Period_s, 'SOC_init',opt.SOC_init, ...
-    'Pulse_s',opt.Pulse_s, 'P_load_W',opt.P_load_W, 'Start_s',opt.Start_s);
+    'Pulse_s',opt.Pulse_s, 'P_load_W',opt.P_load_W, 'Start_s',opt.Start_s, ...
+    'Edge_s',opt.Edge_s);
 
 if opt.Plot, h.plot(out); end
 end

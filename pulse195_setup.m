@@ -15,6 +15,9 @@ function [p, ct] = pulse195_setup(varargin)
 %     P_load_W   pulse power [W].                 Default 31250.
 %     Start_s    quiet time before the first pulse [s]. Default 5.
 %     Ts         BMS and charger sample period [s].    Default 0.01.
+%     Edge_s     rise and fall time of each pulse [s]. Default 0.05. See
+%                section 6 -- 0 is not accepted, because a step edge is what
+%                the load limiter cannot catch.
 %
 %   WHY THE DEFAULT PERIOD IS 60 s AND NOT 600 s
 %     The pulse is the experiment; the gap is not. Nothing in this package or
@@ -42,7 +45,8 @@ function [p, ct] = pulse195_setup(varargin)
 %     gone. The whole project can be reproduced from the UI by choosing the
 %     cell, typing 195 and 1, and pressing Auto-fill all.
 
-opt = struct('Period_s',60, 'Pulse_s',2, 'P_load_W',31250, 'Start_s',5, 'Ts',0.01);
+opt = struct('Period_s',60, 'Pulse_s',2, 'P_load_W',31250, 'Start_s',5, ...
+             'Ts',0.01, 'Edge_s',0.05);
 for k = 1:2:numel(varargin)
     assert(isfield(opt, varargin{k}), 'pulse195:Option', ...
         'Unknown option "%s". Valid: %s.', varargin{k}, ...
@@ -51,6 +55,17 @@ for k = 1:2:numel(varargin)
 end
 assert(opt.Pulse_s < opt.Period_s, 'pulse195:Duty', ...
     'Pulse_s (%g) must be shorter than Period_s (%g).', opt.Pulse_s, opt.Period_s);
+assert(opt.Edge_s >= 4*opt.Ts, 'pulse195:Edge', ...
+    ['Edge_s (%g s) must span at least four BMS samples (%g s). The limiter has ', ...
+     'two samples of loop latency -- the measurement is already one sample old ', ...
+     'and it can only act on the next one -- so an edge of two samples reaches ', ...
+     'full demand before the limiter has responded to any part of it, which is ', ...
+     'a step as far as the limiter is concerned. Four samples gives it two ', ...
+     'chances on the way up. See section 6.'], opt.Edge_s, 4*opt.Ts);
+assert(opt.Edge_s < 0.1*opt.Pulse_s, 'pulse195:Edge', ...
+    ['Edge_s (%g s) must be under a tenth of Pulse_s (%g s), or the ramp is a ', ...
+     'material part of the pulse and the energy delivered is no longer the ', ...
+     'number in the test description.'], opt.Edge_s, opt.Pulse_s);
 
 %% 1. The cell -------------------------------------------------------------
 %  Read from the .ssc the Battery Model Builder generated for Batteries.slx,
@@ -88,7 +103,7 @@ p.Load = bcp.LoadSignal( ...
     'StartTime_s',        opt.Start_s, ...  % let the charger show first
     'Pmin_W',             0, ...            % no accidental regen through the load
     'Pmax_W',             1.12 * opt.P_load_W, ...
-    'Slew_W_per_s',       0, ...            % hard edges; see the note in the report
+    'Slew_W_per_s',       opt.P_load_W / opt.Edge_s, ...   % see section 6
     'IdleThreshold_W',    5, ...
     'OutputSign',         1);
 
@@ -126,6 +141,89 @@ p.Charger.Ts = opt.Ts;
 %  the continuous rating" and "over-current" is now in the protection layer
 %  itself, where it belongs, instead of in a single threshold that had to be
 %  wrong in one direction or the other.
+
+%% 6. Why this test needs the load limiter, and a soft pulse edge ------------
+%  Section 5 covers over-current. UNDER-VOLTAGE is the harder problem on this
+%  pack, and it is arithmetic rather than opinion.
+%
+%  A constant-power load into a source with resistance has a maximum
+%  deliverable power, at the point where the source impedance matches:
+%
+%      P_max(SOC) = Voc(SOC)^2 / (4 * R(SOC))
+%
+%  For these tables at 195S1P:
+%
+%      SOC    Voc      R_pack   P_max      pulse current   lowest cell
+%      100%   812.8 V  1.857 O  88.9 kW    42.6 A          4.11 V
+%       60%   738.8 V  2.034 O  67.1 kW    48.9 A          3.28 V
+%       20%   658.8 V  1.708 O  63.5 kW    55.4 A          2.89 V
+%       10%   638.7 V  2.332 O  43.7 kW    63.8 A          2.51 V
+%        5%   628.7 V  2.865 O  34.5 kW    76.0 A          2.13 V
+%        3%   624.6 V  3.237 O  30.1 kW    -- no solution --
+%
+%  Three things fall out of that table, and each one bites:
+%
+%  1. The under-voltage trip at 2.50 V/cell is first reached at about 10% SOC.
+%     Not at the end of the discharge -- with a tenth of the pack's charge left.
+%
+%  2. Below about 3% SOC the 31250 W demand EXCEEDS P_max and the operating
+%     point does not exist. There is no voltage at which the pack delivers
+%     31250 W; the quadratic has no real root. A solver asked for it drives the
+%     voltage toward collapse, which is where the "dip peaks go way under the
+%     limit" excursions come from. Nothing is wrong with the pack model: the
+%     demand is impossible.
+%
+%  3. Between the two, dV/dP is enormous. At 5% SOC the pulse is at 90% of
+%     P_max, and there a 1% change in demand moves the terminal voltage by
+%     several percent. Any binary controller in that region oscillates.
+%
+%  A trip cannot manage this, because cutting the load removes the sag that
+%  tripped it -- see alg/bcp_load_limiter.m for the full cycle. The limiter can,
+%  because it derates continuously and regulates the lowest cell into a band
+%  just above the trip:
+%
+%      full load above 2.78 V/cell   (V_uv_trip + 0.08 + 0.20)
+%      zero load at    2.58 V/cell   (V_uv_trip + 0.08)
+%
+%  Read against the table: the design pulse runs completely unlimited down to
+%  about 15% SOC, is progressively derated from there, and near empty delivers
+%  whatever holds the pack at 2.58 V/cell instead of demanding the impossible.
+%  The under-voltage trip stops being reached at all, which is what a trip is
+%  for.
+%
+%  THE PULSE EDGE IS NO LONGER A STEP, AND THAT IS NOT COSMETIC
+%    Slew_W_per_s used to be 0 here, which is a 31250 W discontinuity in the
+%    algebraic constraint the Simscape solver has to satisfy. Two separate
+%    problems with that, now that a limiter exists:
+%
+%      The solver. A hard step on a 195-element stiff pack model either costs a
+%      very small step across the edge or fails to converge outright.
+%
+%      The limiter. It reads a measurement that is already one sample old and
+%      can only act on the next sample, so a step gets two full samples -- 20 ms
+%      -- of undiminished demand whatever its fall rate. At 5% SOC, 20 ms at
+%      31250 W is enough to reach the trip the limiter exists to avoid.
+%
+%    THE LATENCY IS TWO SAMPLES, SO THE EDGE HAS TO BE LONGER THAN THAT
+%      The limiter reads pack voltage through the BMS block's input unit delay,
+%      so its measurement is already one sample old, and it can only change the
+%      command on the following sample. That is two samples of loop latency --
+%      20 ms at Ts = 0.01 -- before the first derated command reaches the load,
+%      whatever Fold_Fall_per_s is set to.
+%
+%      An edge of two samples therefore reaches full demand before the limiter
+%      has responded to any part of it: a step, in every way that matters here.
+%      Edge_s = 0.05 spans five samples, so the limiter sees the demand at
+%      roughly 20%, 40% and 60% before it arrives, and has acted twice by the
+%      time it does. The assertion above enforces four as the minimum.
+%
+%      50 ms is 2.5% of the 2 s pulse. The energy cost is close to exactly zero
+%      rather than small: the rise gives up about half of one edge time at full
+%      power and the fall gains the same amount back, so the two cancel to first
+%      order and the pulse still delivers 31250 W for 2 s to well inside every
+%      tolerance in pulse195_verify. It is also a more honest model of a real
+%      load, none of which step. bcp.Project.check() reports it as an issue if
+%      you set it back to zero on a load this size.
 
 p = p.sync();
 end

@@ -43,9 +43,9 @@ All three arrays must be the same width. `verifyWiring` checks it.
 | 4 | `I_chg_limit` | scalar | → charger `I_limit` |
 | 5 | `pack_meas` | 7 | → charger, and everything that wants pack scalars |
 | 6 | `contactor` | scalar | 1 = closed |
-| 7 | `state` | scalar | 0 INIT, 1 IDLE, 2 CHARGE, 3 DISCHARGE, 4 FAULT |
-| 8 | `faults` | scalar | latched bitmask |
-| 9 | `diag` | 10 | why it did what it did |
+| 7 | `state` | scalar | 0 INIT, 1 IDLE, 2 CHARGE, 3 DISCHARGE, 4 FAULT, 5 LOCKOUT |
+| 8 | `faults` | scalar | latched bitmask — **simultaneous faults add** |
+| 9 | `diag` | 17 | why it did what it did |
 
 **Use output 1 or output 2, never both.**
 
@@ -63,28 +63,54 @@ Defined in one place, `bcp.Signals`. `bcp.Signals.describe()` prints it.
 | 6 | `SOC_max` | 0–1 |
 | 7 | `I_pack` | A, **charge-positive** |
 
-### `diag`, the 10-element wire
+### `diag`, the 17-element wire
 
 `bcp.Signals.diagNames()`.
 
 | Index | Signal |
 |---|---|
 | 1 | `demand_present` — the waveform asked for something |
-| 2 | `load_active` — what survived the discharge inhibit |
+| 2 | `load_active` — what survived the discharge inhibit and the limiter |
 | 3 | `arb_reason` — 0 enabled, 1 load active, 2 quiet dwell, 3 pack full, 4 protection, 5 disabled |
 | 4 | `dch_ok` |
 | 5–10 | instantaneous, unconfirmed flags: OV, UV, OC_chg, OC_dch, OT, UT_chg |
+| 11 | `dcl_frac` — 0–1, the fraction of the demand the limiter let through |
+| 12 | `limit_state` — 0 unlimited, 1 voltage foldback, 2 current foldback, 3 soft-start, 4 held off |
+| 13 | `retry_count` — automatic recoveries inside the retry window |
+| 14 | `lockout` — 1 = auto-recovery withdrawn, reset only |
+| 15 | `uv_charge_Ah` — charge taken on since the under-voltage latch |
+| 16 | `recover_dwell_s` — clear-band dwell recovery currently requires |
+| 17 | `soc_raw_min` — **unclamped** minimum SOC as the battery model reported it |
 
-`demand_present` against `load_active` is the pair worth watching. When they
-disagree, protection is holding the load off, and `arb_reason` says what the
-charger is doing about it.
+Four pairs, in the order you would look at them when a run does something you
+did not expect:
 
-### The two vector outputs are 7 and 10 wide, and they sit next to each other
+**`demand_present` vs `load_active`.** What the waveform asked for, and what
+survived. When they disagree the load is being held off or derated.
+
+**`dcl_frac` and `limit_state`.** How much of the demand the load limiter is
+letting through, and which constraint is binding. `dcl_frac` below 1 with no
+fault latched is the system working as designed — the limiter is doing the
+regulating so the trip does not have to. `bcp.Signals.limitState(code)` names it.
+
+**`retry_count` and `lockout`.** How many automatic recoveries have happened
+inside the retry window, and whether auto-recovery has been withdrawn. A retry
+count climbing is the signature of a fault that recovery does not fix.
+
+**`uv_charge_Ah` vs `Bms.Q_uv_reset_Ah`.** How much charge has gone back in
+since the under-voltage latch, against how much it needs before it will clear.
+This is the answer to *why is the load still off, the pack looks fine*.
+
+`soc_raw_min` going negative means the pack model has been discharged past its
+rated capacity. That is the battery model, not the BMS — see
+[Negative SOC](#negative-soc) below.
+
+### The two vector outputs are 7 and 17 wide, and they sit next to each other
 
 `pack_meas` (output 5) is 7 wide and goes to the charger. `diag` (output 9) is
-10 wide and goes to a scope. Wiring `diag` where `pack_meas` belongs is the easy
+17 wide and goes to a scope. Wiring `diag` where `pack_meas` belongs is the easy
 mistake, and the error Simulink reports is a width mismatch against the
-*charger's* input delay — "expected `[7]`, got `[10]`" — which names a block a
+*charger's* input delay — "expected `[7]`, got `[17]`" — which names a block a
 long way from the wire that caused it.
 
 `bcp.Signals.NUM` and `bcp.Signals.DIAG_NUM` are the single definition of each
@@ -105,7 +131,35 @@ which brings all five internal lines pre-drawn.
 | 5 | 16 | over-temperature | opens the contactor |
 | 6 | 32 | under-temperature while charging | inhibits **charging** only |
 
-`bcp.Signals.faultBits(mask)` turns the number into words.
+`bcp.Signals.faultBits(mask)` turns the number into words, and
+`bcp.Signals.faultTable()` prints every mask a run is likely to show.
+
+**Simultaneous faults ADD, so 5 and 10 are not fault codes — they are sums.**
+This is the single most common "what is this value" question, and both answers
+are the same shape:
+
+| `faults` | Bits | What happened |
+|---|---|---|
+| 5 | 4 + 1 | charge over-current that also drove a cell over-voltage |
+| 10 | 8 + 2 | discharge over-current that also sagged a cell under-voltage |
+
+And the **order** is diagnostic. An over-current confirms in `t_i_trip`
+(0.1 s by default) and a voltage fault in `t_v_trip` (0.5 s), so an over-current
+big enough to also breach the voltage window shows the current bit **first,
+alone**, and picks up the voltage bit about 0.4 s later. Seeing `4` and then `5`,
+or `8` and then `10`, is not a state machine moving on — it is one physical event
+whose second, slower confirmation has just completed.
+
+On a discharge, `10` reads as *the over-draw was well past what the pack could
+deliver at that state of charge*. If you are seeing it on a pulse test, the load
+current is above the fast discharge tier **and** the sag is reaching the
+under-voltage threshold, which usually means the pulse is being asked for at a
+lower SOC than the pack can support it at. `dcl_frac` on `diag(11)` will show
+whether the limiter tried to prevent it.
+
+`4 + 8 = 12` — over-current confirmed in *both* directions — is different in
+kind: no load does that. It means `I_sign` is wrong or the current array is
+miswired. Check pack current against a known discharge.
 
 **Over-current is two tiers sharing one bit.** A cell has two current ratings and
 one threshold cannot honour both: set it at the continuous rating and every
@@ -128,6 +182,119 @@ protection layer that answers every fault by opening the contactor cannot
 recover from either one without a human — and in this simulation it would
 deadlock, because the load is what brings an over-voltage pack back into range.
 So only the faults that mean *this pack must be isolated* open the contactor.
+
+### Discharge limiting, and why the trip is not the operating limit
+
+A trip is binary and a constant-power load is positive feedback, and those two
+together oscillate. The cycle, on any discharge that reaches the under-voltage
+threshold:
+
+```text
+sag under V_uv_trip  ->  UV latches, dch_ok drops  ->  load command goes to 0
+   ->  the sag disappears, because the sag WAS the load
+   ->  the pack reads inside the clear band, so the fault recovers
+   ->  full load slams back on  ->  a DEEPER sag, because SOC is lower and R0 higher
+```
+
+Each lap costs charge and returns almost none, so the dips grow and end up far
+below the threshold that was supposed to prevent them. Nothing in that chain is
+a coding error — it is what a bang-bang controller does to a load whose current
+*rises* as the voltage it caused *falls*. `I = P/V`, so a 10% sag is an 11%
+current rise is more sag. Protection cannot fix it by itself: whatever the
+threshold and whatever the dwell, a binary trip removes its own trigger.
+
+So the trip stops being the operating limit. `alg/bcp_load_limiter.m` puts a
+continuous limit in front of it — the discharge current/power limit a production
+BMS publishes on CAN as DCL, and which the inverter is required to obey. It
+slides down as the cells approach their cutoff, and protection becomes the
+backstop it was always meant to be.
+
+Four mechanisms, each closing a different escape route:
+
+| Mechanism | Where | What it stops |
+|---|---|---|
+| continuous foldback (`UseLoadLimiter`) | `bcp_load_limiter` | the trip firing at all |
+| soft-start on re-engagement (`t_softstart_s`) | `bcp_load_limiter` | a step re-engagement going straight back under |
+| UV clears only on charge (`Q_uv_reset_Ah`) | `bcp_protection` | recovering on a rest, which gained no energy |
+| retry backoff and lockout (`Retry_Backoff_x`, `N_retry_max`) | `bcp_protection` | any surviving cycle running forever |
+
+**The limit moves by rate, not by formula, and that is the stability argument.**
+Evaluating `frac = f(V_min)` fresh each sample just reintroduces the oscillation
+in analogue form: its loop gain is `df/dV · dV/dP · P_demand`, and `dV/dP` goes
+to infinity as a constant-power draw approaches the pack's maximum power point
+`P_max = Voc²/(4R)`. There is no `f` that is stable across the SOC range — the
+system is at its most unstable exactly where the limiter is needed most.
+
+Instead the limit is a rate-limited integrator with a deadband:
+
+| `V_min` | What the limit does |
+|---|---|
+| below `V_fold_end` | closes, at a rate proportional to how far below, capped at `Fold_Fall_per_s` |
+| between the two | holds still |
+| above `V_fold_start` | reopens, slowly, at `Fold_Rise_per_s` |
+
+The step per sample is bounded by `rate · Ts` however large the error is, so the
+loop cannot amplify a transient whatever `dV/dP` has become. The deadband is
+what stops the integrator hunting: once `V_min` is inside it the limit stops
+moving, and the pack sits just above its cutoff delivering what it can.
+
+Two more properties worth knowing, because both look like bugs until they are
+explained:
+
+**The limit only reopens while current is flowing** (`Fold_Learn_frac`). At rest
+`V_min` relaxes to OCV, far above the band — but an open-circuit voltage is not
+evidence the pack can deliver power; it is precisely the measurement that misled
+the bang-bang trip. Reopening therefore needs `|I_pack|` above a threshold:
+under load because the load is proving it, or under charge because the charge is
+replacing what the load took. At rest the limit holds what it has.
+
+**An inhibit freezes the limit rather than resetting it.** The pre-trip limit was
+demonstrably too high, and that is the one useful thing the failed attempt
+established.
+
+There are two samples of loop latency — the measurement comes through the BMS's
+input unit delay, and the command can only change on the next sample — so a
+**step** load edge reaches full demand before the limiter has responded to any
+part of it. Give a large pulse load a `Slew_W_per_s` spanning at least four
+samples; `bcp.Project.check()` says so when the load is big enough for it to
+matter.
+
+<a name="negative-soc"></a>
+### Negative SOC is the battery model, not the BMS
+
+A Simscape `table_battery` — which is what the Battery Model Builder generates —
+computes state of charge as a plain integral of cell current over the *rated*
+capacity:
+
+```text
+socCell(t) = socCell(0) + ∫ i dt / (3600 · AH)
+```
+
+There is no floor on that integrator. Take out more coulombs than the rated
+capacity holds and SOC goes below zero, and the component neither clamps nor
+complains. What it *does* clamp is the tables: the generated component sets
+`extrapolation_option = nearest`, so below `SOC = 0` the OCV and R0 lookups hold
+their `SOC = 0` values.
+
+Which explains the shape of what you see. Past empty the cell keeps its
+end-of-table OCV — 3.172 V for the bundled P45B tables — and its end-of-table
+resistance, so it goes on sourcing current forever at a plausible-looking
+voltage while SOC drifts negative. **The pack model has no concept of being
+empty.** The only thing that stops a discharge is the under-voltage trip, and if
+that trip keeps clearing, nothing does.
+
+`Bms.SOC_clamp` (on by default) limits the SOC the BMS *reports* to 0–1, because
+`SOC_stop`, `SOC_restart` and every SOC comparison in this package are written
+against a 0–1 quantity. The unclamped minimum is still published on `diag(17)`
+so the excursion is visible rather than absorbed.
+
+How to read it:
+
+- **A fraction of a percent negative** is coulomb-counting overshoot against a
+  capacity that is rated rather than measured. Normal.
+- **A sustained negative reading** means the run kept discharging a pack the
+  model was no longer modelling. Treat it as the end of the useful part of the
+  run, not as a BMS fault. `pulse195_verify` checks for it explicitly.
 
 ---
 

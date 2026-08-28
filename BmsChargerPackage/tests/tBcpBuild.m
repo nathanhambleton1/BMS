@@ -208,12 +208,17 @@ classdef tBcpBuild < matlab.unittest.TestCase
             end
         end
 
-        function diagOutputIsExactlyTenWide(tc)
-        %DIAGOUTPUTISEXACTLYTENWIDE  The width contract, asserted where it is
-        %   cheap. Get it wrong and the failure is a Simulink port mismatch
+        function diagOutputMatchesTheDeclaredWidth(tc)
+        %DIAGOUTPUTMATCHESTHEDECLAREDWIDTH  The width contract, asserted where it
+        %   is cheap. Get it wrong and the failure is a Simulink port mismatch
         %   reported against whatever the wire happened to reach -- classically
         %   the charger's 7-wide pack_meas input, which is the port next door on
         %   the BMS block and the easy one to hit by mistake.
+        %
+        %   Asserted against bcp.Signals.DIAG_NUM rather than a literal, because
+        %   the width has changed once already (10 to 17, when the load limiter
+        %   and the retry diagnostics were added) and a literal here is a test
+        %   that has to be edited every time rather than one that holds.
             p = bcp.Project();
             h = tc.makeHarness('tb_diagwidth', p);
             out = h.simulate(1);
@@ -238,10 +243,17 @@ classdef tBcpBuild < matlab.unittest.TestCase
         %   from the ungated demand instead and the load reads busy forever, the
         %   charger never runs, and the pack sits at its floor for the rest of
         %   the simulation.
+        %
+        %   THE LIMITER IS OFF HERE ON PURPOSE. Its whole job is to keep the pack
+        %   out of under-voltage, so with it on this scenario never reaches the
+        %   fault the test is about. The pair of tests is the point: this one
+        %   proves the inhibit path still recovers when the trip does fire, and
+        %   loadLimiterKeepsThePackOutOfUnderVoltage proves it usually does not.
             p = bcp.Project();
             p.Load = bcp.LoadSignal('Waveform','constant', 'Const_W',2200, ...
                 'Pmax_W',4000);
-            p.Bms.t_quiet_s = 0.5;
+            p.Bms.t_quiet_s      = 0.5;
+            p.Bms.UseLoadLimiter = false;
             p = p.sync();
             h = tc.makeHarness('tb_deadlock', p, 'SOC_init', 0.08);
             out = h.simulate(400);
@@ -260,6 +272,85 @@ classdef tBcpBuild < matlab.unittest.TestCase
             tc.verifyTrue(any(I(firstUV:end) > 1), ...
                 ['After the inhibit the charger must get its window. If this ', ...
                  'fails the pack is deadlocked by its own protection.']);
+        end
+
+        function loadLimiterKeepsThePackOutOfUnderVoltage(tc)
+        %LOADLIMITERKEEPSTHEPACKOUTOFUNDERVOLTAGE  The behaviour the limiter was
+        %   added for, on the same scenario that trips without it.
+        %
+        %   A heavy constant load on a nearly empty pack. Without the limiter
+        %   (see protectionDoesNotDeadlockAgainstItsOwnLoad) this reaches
+        %   under-voltage, and because cutting the load removes the sag that
+        %   tripped it, it goes on reaching it. With the limiter the demand is
+        %   derated continuously, the lowest cell is held in the foldback band
+        %   just above the trip, and the trip is never reached.
+        %
+        %   Three separate claims, and all three matter. That the fault never
+        %   latches is the headline. That dcl_frac actually went below 1 is what
+        %   distinguishes "the limiter worked" from "the scenario was not severe
+        %   enough to test anything". That the lowest cell stayed above the trip
+        %   is the physical statement the other two are evidence for.
+            p = bcp.Project();
+            p.Load = bcp.LoadSignal('Waveform','constant', 'Const_W',2200, ...
+                'Pmax_W',4000, 'Slew_W_per_s',2200/0.05);
+            p.Bms.t_quiet_s      = 0.5;
+            p.Bms.UseLoadLimiter = true;
+            p = p.sync();
+            h = tc.makeHarness('tb_limiter', p, 'SOC_init', 0.08);
+            out = h.simulate(400);
+
+            faults = tc.sig(out, 'bms_faults');
+            D      = tc.sig(out, 'bms_diag');
+            M      = tc.sig(out, 'bms_pack_meas');
+
+            dn   = bcp.Signals.diagNames();
+            dcl  = D(:, strcmp(dn,'dcl_frac'));
+            Vmin = M(:, bcp.Signals.V_MIN);
+
+            tc.verifyEqual(max(faults), 0, ...
+                ['With the limiter on, this load must never latch a fault. Any ', ...
+                 'non-zero mask means the limiter did not get there first -- ', ...
+                 'check V_fold_margin_V against V_uv_trip, and the load slew ', ...
+                 'against two BMS samples.']);
+            tc.verifyLessThan(min(dcl), 0.99, ...
+                ['dcl_frac never left 1, so the limiter never engaged and this ', ...
+                 'test proved nothing. The scenario is meant to be severe ', ...
+                 'enough to need derating.']);
+            tc.verifyGreaterThan(min(Vmin), p.Bms.V_uv_trip, ...
+                'The limiter must hold the lowest cell above the trip, not near it.');
+        end
+
+        function aRecoveredFaultDoesNotChatterBackAndForth(tc)
+        %ARECOVEREDFAULTDOESNOTCHATTERBACKANDFORTH  The regression test for the
+        %   cyclic fault chain, stated as a count rather than as a maximum.
+        %
+        %   "max fault mask" cannot see this failure: a run that tripped once
+        %   and a run that cycled thirty times report the same maximum. What
+        %   distinguishes them is the number of RISING EDGES on the latch.
+        %
+        %   Run long enough and deep enough that a fault is genuinely reachable,
+        %   with everything on: the limiter to keep the trip rare, the charge
+        %   requirement so an under-voltage latch cannot clear on a rest, and the
+        %   retry backoff so any cycle that does start gets slower rather than
+        %   faster. Whatever happens, it must not be a loop.
+            p = bcp.Project();
+            p.Load = bcp.LoadSignal('Waveform','pulse', ...
+                'Pulse_Base_W',400, 'Pulse_Amplitude_W',3000, ...
+                'Pulse_Frequency_Hz',0.25, 'Pulse_Duty_pct',40, ...
+                'Pmax_W',5000, 'Slew_W_per_s',3400/0.05);
+            p.Bms.t_quiet_s = 0.5;
+            p = p.sync();
+            h = tc.makeHarness('tb_chatter', p, 'SOC_init', 0.06);
+            out = h.simulate(600);
+
+            faults = tc.sig(out, 'bms_faults');
+            edges  = sum(diff(double(faults > 0)) > 0);
+
+            tc.verifyLessThanOrEqual(edges, 1, sprintf( ...
+                ['The fault latch set %d times in 600 s. More than one is the ', ...
+                 'cyclic chain: trip, load off, sag gone, recover, load on, ', ...
+                 'deeper sag. alg/bcp_load_limiter.m derives it and lists the ', ...
+                 'four mechanisms that are supposed to stop it.'], edges));
         end
 
         function reinsertingReplacesRatherThanAccumulates(tc)

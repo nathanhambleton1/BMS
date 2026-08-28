@@ -1,0 +1,722 @@
+﻿Running tBcpAlgorithms
+.......... .......[bcp] Pack CV target rescaled 58.80 V -> 84.00 V for the new 20S topology.
+... .......... .......... ..........
+.......... .......... .......... ..
+Done tBcpAlgorithms
+__________
+
+
+=== tBcpAlgorithms: 82 passed, 0 failed, 0 incomplete ===
+Running tBcpBuild
+[bcp] BMS block inserted into "tb_smoke".
+BMS: Ts=0.01 s, 14S, protection OV 4.25 V / UV 2.50 V per cell
+     charge rate: 21.75 A permitted (I_chg_limit to the charger)
+     charge trips:    27.19 A held 10.0 s   |  34.80 A held 0.10 s
+     discharge trips: 247.5 A held 10.0 s   |  371.3 A held 0.10 s
+     load limiter: full load above 2.780 V/cell, zero at 2.580 V/cell
+                   current foldback 334.2 A -> 371.3 A; closes 20.0/s, reopens 0.25/s
+                   soft-start 0.50 s after a discharge inhibit
+     fault recovery: 2.0 s dwell, x3.0 per retry, capped at 60 s; lockout after 3 retries in 30 s
+                     UV clears only after 0.1125 Ah of charge goes back in
+     arbitration: LOAD FIRST, charge only after 1.00 s idle
+     charge window: SOC 85% -> 95%, re-arm below 4.05 V/cell
+     temperature: no input -- held at 25 degC, OT/UT wired but inert
+     load: pulse, peak 800 W, mean 160 W
+[bcp] Charger block inserted into "tb_smoke".
+Charger: Ts=0.01 s, 14S
+     auto-filled from Molicel INR-21700-P45B 14S5P: 67.5 A supply rating = the pack datasheet maximum (3.00C), taper C/20, R=42.0 mOhm
+     supply rating 67.50 A / 3969 W  ->  CV 4.200 V/cell (58.80 V pack)
+     the charge RATE arrives from the BMS on I_limit, not from here
+     terminate below 1.12 A held for 2.0 s;  re-arm below 4.05 V/cell
+     precharge 2.25 A while any cell is under 3.00 V
+     gains: cell 100.0 A/V + 200.0 A/(V s),  pack 7.14 A/V + 14.29 A/(V s)
+[bcp] Wired 5 of 5 lines between the BMS and the charger.
+
+[bcp] Now wire your battery model to the BMS block:
+    Inport        Name                            Meaning                    
+    ______    ____________    _______________________________________________
+
+      1       {'V_cell'  }    {'per-cell voltage [V]'                       }
+      2       {'SOC_cell'}    {'per-cell SOC'                               }
+      3       {'I_cell'  }    {'per-cell current [A], your model's polarity'}
+      4       {'P_chg'   }    {'from charger P_chg_cmd [W]'                 }
+      5       {'chg_done'}    {'from charger done'                          }
+
+      ...and the BMS output P_load_cmd (or P_net_cmd) to your dynamic load.
+      Full procedure: docs/INSTALL.md
+
+[bcp] Harness "tb_smoke" built. Plant 0.001 s, BMS 0.01 s. Simulate with h.simulate(stopTime).
+
+=== BMS wiring check: tb_smoke ===
+  V_cell arrives 14 wide.
+  That matches S = 14: one entry per series element, parallel strings lumped. Also correct -- mean()*S and sum()/S handle both layouts.
+  RESULT  ok
+
+.[bcp] BMS block inserted into "tb_loop_open".
+BMS: Ts=0.01 s, 14S, protection OV 4.25 V / UV 2.50 V per cell
+     charge rate: 21.75 A permitted (I_chg_limit to the charger)
+     charge trips:    27.19 A held 10.0 s   |  34.80 A held 0.10 s
+     discharge trips: 247.5 A held 10.0 s   |  371.3 A held 0.10 s
+     load limiter: full load above 2.780 V/cell, zero at 2.580 V/cell
+                   current foldback 334.2 A -> 371.3 A; closes 20.0/s, reopens 0.25/s
+                   soft-start 0.50 s after a discharge inhibit
+     fault recovery: 2.0 s dwell, x3.0 per retry, capped at 60 s; lockout after 3 retries in 30 s
+                     UV clears only after 0.1125 Ah of charge goes back in
+     arbitration: LOAD FIRST, charge only after 1.00 s idle
+     charge window: SOC 85% -> 95%, re-arm below 4.05 V/cell
+     temperature: no input -- held at 25 degC, OT/UT wired but inert
+     load: pulse, peak 800 W, mean 160 W
+[bcp] Charger block inserted into "tb_loop_open".
+Charger: Ts=0.01 s, 14S
+     auto-filled from Molicel INR-21700-P45B 14S5P: 67.5 A supply rating = the pack datasheet maximum (3.00C), taper C/20, R=42.0 mOhm
+     supply rating 67.50 A / 3969 W  ->  CV 4.200 V/cell (58.80 V pack)
+     the charge RATE arrives from the BMS on I_limit, not from here
+     terminate below 1.12 A held for 2.0 s;  re-arm below 4.05 V/cell
+     precharge 2.25 A while any cell is under 3.00 V
+     gains: cell 100.0 A/V + 200.0 A/(V s),  pack 7.14 A/V + 14.29 A/(V s)
+[bcp] Wired 5 of 5 lines between the BMS and the charger.
+
+[bcp] Now wire your battery model to the BMS block:
+    Inport        Name                            Meaning                    
+    ______    ____________    _______________________________________________
+
+      1       {'V_cell'  }    {'per-cell voltage [V]'                       }
+      2       {'SOC_cell'}    {'per-cell SOC'                               }
+      3       {'I_cell'  }    {'per-cell current [A], your model's polarity'}
+      4       {'P_chg'   }    {'from charger P_chg_cmd [W]'                 }
+      5       {'chg_done'}    {'from charger done'                          }
+
+      ...and the BMS output P_load_cmd (or P_net_cmd) to your dynamic load.
+      Full procedure: docs/INSTALL.md
+
+[bcp] Harness "tb_loop_open" built. Plant 0.001 s, BMS 0.01 s. Simulate with h.simulate(stopTime).
+[bcp] BMS block inserted into "tb_loop_closed".
+BMS: Ts=0.01 s, 14S, protection OV 4.25 V / UV 2.50 V per cell
+     charge rate: 21.75 A permitted (I_chg_limit to the charger)
+     charge trips:    27.19 A held 10.0 s   |  34.80 A held 0.10 s
+     discharge trips: 247.5 A held 10.0 s   |  371.3 A held 0.10 s
+     load limiter: full load above 2.780 V/cell, zero at 2.580 V/cell
+                   current foldback 334.2 A -> 371.3 A; closes 20.0/s, reopens 0.25/s
+                   soft-start 0.50 s after a discharge inhibit
+     fault recovery: 2.0 s dwell, x3.0 per retry, capped at 60 s; lockout after 3 retries in 30 s
+                     UV clears only after 0.1125 Ah of charge goes back in
+     arbitration: LOAD FIRST, charge only after 1.00 s idle
+     charge window: SOC 85% -> 95%, re-arm below 4.05 V/cell
+     temperature: no input -- held at 25 degC, OT/UT wired but inert
+     load: pulse, peak 800 W, mean 160 W
+[bcp] Charger block inserted into "tb_loop_closed".
+Charger: Ts=0.01 s, 14S
+     auto-filled from Molicel INR-21700-P45B 14S5P: 67.5 A supply rating = the pack datasheet maximum (3.00C), taper C/20, R=42.0 mOhm
+     supply rating 67.50 A / 3969 W  ->  CV 4.200 V/cell (58.80 V pack)
+     the charge RATE arrives from the BMS on I_limit, not from here
+     terminate below 1.12 A held for 2.0 s;  re-arm below 4.05 V/cell
+     precharge 2.25 A while any cell is under 3.00 V
+     gains: cell 100.0 A/V + 200.0 A/(V s),  pack 7.14 A/V + 14.29 A/(V s)
+[bcp] Wired 5 of 5 lines between the BMS and the charger.
+
+[bcp] Now wire your battery model to the BMS block:
+    Inport        Name                            Meaning                    
+    ______    ____________    _______________________________________________
+
+      1       {'V_cell'  }    {'per-cell voltage [V]'                       }
+      2       {'SOC_cell'}    {'per-cell SOC'                               }
+      3       {'I_cell'  }    {'per-cell current [A], your model's polarity'}
+      4       {'P_chg'   }    {'from charger P_chg_cmd [W]'                 }
+      5       {'chg_done'}    {'from charger done'                          }
+
+      ...and the BMS output P_load_cmd (or P_net_cmd) to your dynamic load.
+      Full procedure: docs/INSTALL.md
+
+[bcp] Harness "tb_loop_closed" built. Plant 0.001 s, BMS 0.01 s. Simulate with h.simulate(stopTime).
+[bcp] Harness simulated 20 s in 0.9 s wall clock.
+.[bcp] BMS block inserted into "tb_priority".
+BMS: Ts=0.01 s, 14S, protection OV 4.25 V / UV 2.50 V per cell
+     charge rate: 21.75 A permitted (I_chg_limit to the charger)
+     charge trips:    27.19 A held 10.0 s   |  34.80 A held 0.10 s
+     discharge trips: 247.5 A held 10.0 s   |  371.3 A held 0.10 s
+     load limiter: full load above 2.780 V/cell, zero at 2.580 V/cell
+                   current foldback 334.2 A -> 371.3 A; closes 20.0/s, reopens 0.25/s
+                   soft-start 0.50 s after a discharge inhibit
+     fault recovery: 2.0 s dwell, x3.0 per retry, capped at 60 s; lockout after 3 retries in 30 s
+                     UV clears only after 0.1125 Ah of charge goes back in
+     arbitration: LOAD FIRST, charge only after 0.50 s idle
+     charge window: SOC 85% -> 95%, re-arm below 4.05 V/cell
+     temperature: no input -- held at 25 degC, OT/UT wired but inert
+     load: pulse, peak 900 W, mean 360 W
+[bcp] Charger block inserted into "tb_priority".
+Charger: Ts=0.01 s, 14S
+     auto-filled from Molicel INR-21700-P45B 14S5P: 67.5 A supply rating = the pack datasheet maximum (3.00C), taper C/20, R=42.0 mOhm
+     supply rating 67.50 A / 3969 W  ->  CV 4.200 V/cell (58.80 V pack)
+     the charge RATE arrives from the BMS on I_limit, not from here
+     terminate below 1.12 A held for 2.0 s;  re-arm below 4.05 V/cell
+     precharge 2.25 A while any cell is under 3.00 V
+     gains: cell 100.0 A/V + 200.0 A/(V s),  pack 7.14 A/V + 14.29 A/(V s)
+[bcp] Wired 5 of 5 lines between the BMS and the charger.
+
+[bcp] Now wire your battery model to the BMS block:
+    Inport        Name                            Meaning                    
+    ______    ____________    _______________________________________________
+
+      1       {'V_cell'  }    {'per-cell voltage [V]'                       }
+      2       {'SOC_cell'}    {'per-cell SOC'                               }
+      3       {'I_cell'  }    {'per-cell current [A], your model's polarity'}
+      4       {'P_chg'   }    {'from charger P_chg_cmd [W]'                 }
+      5       {'chg_done'}    {'from charger done'                          }
+
+      ...and the BMS output P_load_cmd (or P_net_cmd) to your dynamic load.
+      Full procedure: docs/INSTALL.md
+
+[bcp] Harness "tb_priority" built. Plant 0.001 s, BMS 0.01 s. Simulate with h.simulate(stopTime).
+[bcp] Harness simulated 200 s in 1.1 s wall clock.
+.[bcp] BMS block inserted into "tb_ccv".
+BMS: Ts=0.01 s, 14S, protection OV 4.25 V / UV 2.50 V per cell
+     charge rate: 21.75 A permitted (I_chg_limit to the charger)
+     charge trips:    27.19 A held 10.0 s   |  34.80 A held 0.10 s
+     discharge trips: 247.5 A held 10.0 s   |  371.3 A held 0.10 s
+     load limiter: full load above 2.780 V/cell, zero at 2.580 V/cell
+                   current foldback 334.2 A -> 371.3 A; closes 20.0/s, reopens 0.25/s
+                   soft-start 0.50 s after a discharge inhibit
+     fault recovery: 2.0 s dwell, x3.0 per retry, capped at 60 s; lockout after 3 retries in 30 s
+                     UV clears only after 0.1125 Ah of charge goes back in
+     arbitration: LOAD FIRST, charge only after 0.00 s idle
+     charge window: SOC 90% -> 100%, re-arm below 4.05 V/cell
+     temperature: no input -- held at 25 degC, OT/UT wired but inert
+     load: off, peak 0 W, mean 0 W
+[bcp] Charger block inserted into "tb_ccv".
+Charger: Ts=0.01 s, 14S
+     auto-filled from Molicel INR-21700-P45B 14S5P: 67.5 A supply rating = the pack datasheet maximum (3.00C), taper C/20, R=42.0 mOhm
+     supply rating 67.50 A / 3969 W  ->  CV 4.200 V/cell (58.80 V pack)
+     the charge RATE arrives from the BMS on I_limit, not from here
+     terminate below 1.12 A held for 2.0 s;  re-arm below 4.05 V/cell
+     precharge 2.25 A while any cell is under 3.00 V
+     gains: cell 100.0 A/V + 200.0 A/(V s),  pack 7.14 A/V + 14.29 A/(V s)
+[bcp] Wired 5 of 5 lines between the BMS and the charger.
+
+[bcp] Now wire your battery model to the BMS block:
+    Inport        Name                            Meaning                    
+    ______    ____________    _______________________________________________
+
+      1       {'V_cell'  }    {'per-cell voltage [V]'                       }
+      2       {'SOC_cell'}    {'per-cell SOC'                               }
+      3       {'I_cell'  }    {'per-cell current [A], your model's polarity'}
+      4       {'P_chg'   }    {'from charger P_chg_cmd [W]'                 }
+      5       {'chg_done'}    {'from charger done'                          }
+
+      ...and the BMS output P_load_cmd (or P_net_cmd) to your dynamic load.
+      Full procedure: docs/INSTALL.md
+
+[bcp] Harness "tb_ccv" built. Plant 0.001 s, BMS 0.01 s. Simulate with h.simulate(stopTime).
+[bcp] Harness simulated 1200 s in 3.0 s wall clock.
+.[bcp] BMS block inserted into "tb_knee".
+BMS: Ts=0.01 s, 14S, protection OV 4.25 V / UV 2.50 V per cell
+     charge rate: 21.75 A permitted (I_chg_limit to the charger)
+     charge trips:    27.19 A held 10.0 s   |  34.80 A held 0.10 s
+     discharge trips: 247.5 A held 10.0 s   |  371.3 A held 0.10 s
+     load limiter: full load above 2.780 V/cell, zero at 2.580 V/cell
+                   current foldback 334.2 A -> 371.3 A; closes 20.0/s, reopens 0.25/s
+                   soft-start 0.50 s after a discharge inhibit
+     fault recovery: 2.0 s dwell, x3.0 per retry, capped at 60 s; lockout after 3 retries in 30 s
+                     UV clears only after 0.1125 Ah of charge goes back in
+     arbitration: LOAD FIRST, charge only after 0.00 s idle
+     charge window: SOC 90% -> 100%, re-arm below 4.05 V/cell
+     temperature: no input -- held at 25 degC, OT/UT wired but inert
+     load: off, peak 0 W, mean 0 W
+[bcp] Charger block inserted into "tb_knee".
+Charger: Ts=0.01 s, 14S
+     auto-filled from Molicel INR-21700-P45B 14S5P: 67.5 A supply rating = the pack datasheet maximum (3.00C), taper C/20, R=42.0 mOhm
+     supply rating 67.50 A / 3969 W  ->  CV 4.200 V/cell (58.80 V pack)
+     the charge RATE arrives from the BMS on I_limit, not from here
+     terminate below 1.12 A held for 2.0 s;  re-arm below 4.05 V/cell
+     precharge 2.25 A while any cell is under 3.00 V
+     gains: cell 100.0 A/V + 200.0 A/(V s),  pack 7.14 A/V + 14.29 A/(V s)
+[bcp] Wired 5 of 5 lines between the BMS and the charger.
+
+[bcp] Now wire your battery model to the BMS block:
+    Inport        Name                            Meaning                    
+    ______    ____________    _______________________________________________
+
+      1       {'V_cell'  }    {'per-cell voltage [V]'                       }
+      2       {'SOC_cell'}    {'per-cell SOC'                               }
+      3       {'I_cell'  }    {'per-cell current [A], your model's polarity'}
+      4       {'P_chg'   }    {'from charger P_chg_cmd [W]'                 }
+      5       {'chg_done'}    {'from charger done'                          }
+
+      ...and the BMS output P_load_cmd (or P_net_cmd) to your dynamic load.
+      Full procedure: docs/INSTALL.md
+
+[bcp] Harness "tb_knee" built. Plant 0.001 s, BMS 0.01 s. Simulate with h.simulate(stopTime).
+[bcp] Harness simulated 1200 s in 2.6 s wall clock.
+.[bcp] BMS block inserted into "tb_diagwidth".
+BMS: Ts=0.01 s, 14S, protection OV 4.25 V / UV 2.50 V per cell
+     charge rate: 21.75 A permitted (I_chg_limit to the charger)
+     charge trips:    27.19 A held 10.0 s   |  34.80 A held 0.10 s
+     discharge trips: 247.5 A held 10.0 s   |  371.3 A held 0.10 s
+     load limiter: full load above 2.780 V/cell, zero at 2.580 V/cell
+                   current foldback 334.2 A -> 371.3 A; closes 20.0/s, reopens 0.25/s
+                   soft-start 0.50 s after a discharge inhibit
+     fault recovery: 2.0 s dwell, x3.0 per retry, capped at 60 s; lockout after 3 retries in 30 s
+                     UV clears only after 0.1125 Ah of charge goes back in
+     arbitration: LOAD FIRST, charge only after 1.00 s idle
+     charge window: SOC 85% -> 95%, re-arm below 4.05 V/cell
+     temperature: no input -- held at 25 degC, OT/UT wired but inert
+     load: pulse, peak 800 W, mean 160 W
+[bcp] Charger block inserted into "tb_diagwidth".
+Charger: Ts=0.01 s, 14S
+     auto-filled from Molicel INR-21700-P45B 14S5P: 67.5 A supply rating = the pack datasheet maximum (3.00C), taper C/20, R=42.0 mOhm
+     supply rating 67.50 A / 3969 W  ->  CV 4.200 V/cell (58.80 V pack)
+     the charge RATE arrives from the BMS on I_limit, not from here
+     terminate below 1.12 A held for 2.0 s;  re-arm below 4.05 V/cell
+     precharge 2.25 A while any cell is under 3.00 V
+     gains: cell 100.0 A/V + 200.0 A/(V s),  pack 7.14 A/V + 14.29 A/(V s)
+[bcp] Wired 5 of 5 lines between the BMS and the charger.
+
+[bcp] Now wire your battery model to the BMS block:
+    Inport        Name                            Meaning                    
+    ______    ____________    _______________________________________________
+
+      1       {'V_cell'  }    {'per-cell voltage [V]'                       }
+      2       {'SOC_cell'}    {'per-cell SOC'                               }
+      3       {'I_cell'  }    {'per-cell current [A], your model's polarity'}
+      4       {'P_chg'   }    {'from charger P_chg_cmd [W]'                 }
+      5       {'chg_done'}    {'from charger done'                          }
+
+      ...and the BMS output P_load_cmd (or P_net_cmd) to your dynamic load.
+      Full procedure: docs/INSTALL.md
+
+[bcp] Harness "tb_diagwidth" built. Plant 0.001 s, BMS 0.01 s. Simulate with h.simulate(stopTime).
+[bcp] Harness simulated 1 s in 0.6 s wall clock.
+.[Warning: Inserting with 2 unresolved consistency issue(s). Run p.report() to see them.] 
+[> In bcp/Project/insertInto (line 493)
+In bcp/Harness/build (line 99)
+In tBcpBuild/makeHarness (line 41)
+In tBcpBuild/protectionDoesNotDeadlockAgainstItsOwnLoad (line 258)]
+[bcp] BMS block inserted into "tb_deadlock".
+BMS: Ts=0.01 s, 14S, protection OV 4.25 V / UV 2.50 V per cell
+     charge rate: 21.75 A permitted (I_chg_limit to the charger)
+     charge trips:    27.19 A held 10.0 s   |  34.80 A held 0.10 s
+     discharge trips: 247.5 A held 10.0 s   |  371.3 A held 0.10 s
+     load limiter: OFF -- the trip is the operating limit, and will chatter
+     fault recovery: 2.0 s dwell, x3.0 per retry, capped at 60 s; lockout after 3 retries in 30 s
+                     UV clears only after 0.1125 Ah of charge goes back in
+     arbitration: LOAD FIRST, charge only after 0.50 s idle
+     charge window: SOC 85% -> 95%, re-arm below 4.05 V/cell
+     temperature: no input -- held at 25 degC, OT/UT wired but inert
+     load: constant, peak 2200 W, mean 2200 W
+[bcp] Charger block inserted into "tb_deadlock".
+Charger: Ts=0.01 s, 14S
+     auto-filled from Molicel INR-21700-P45B 14S5P: 67.5 A supply rating = the pack datasheet maximum (3.00C), taper C/20, R=42.0 mOhm
+     supply rating 67.50 A / 3969 W  ->  CV 4.200 V/cell (58.80 V pack)
+     the charge RATE arrives from the BMS on I_limit, not from here
+     terminate below 1.12 A held for 2.0 s;  re-arm below 4.05 V/cell
+     precharge 2.25 A while any cell is under 3.00 V
+     gains: cell 100.0 A/V + 200.0 A/(V s),  pack 7.14 A/V + 14.29 A/(V s)
+[bcp] Wired 5 of 5 lines between the BMS and the charger.
+
+[bcp] Now wire your battery model to the BMS block:
+    Inport        Name                            Meaning                    
+    ______    ____________    _______________________________________________
+
+      1       {'V_cell'  }    {'per-cell voltage [V]'                       }
+      2       {'SOC_cell'}    {'per-cell SOC'                               }
+      3       {'I_cell'  }    {'per-cell current [A], your model's polarity'}
+      4       {'P_chg'   }    {'from charger P_chg_cmd [W]'                 }
+      5       {'chg_done'}    {'from charger done'                          }
+
+      ...and the BMS output P_load_cmd (or P_net_cmd) to your dynamic load.
+      Full procedure: docs/INSTALL.md
+
+[bcp] Harness "tb_deadlock" built. Plant 0.001 s, BMS 0.01 s. Simulate with h.simulate(stopTime).
+[bcp] Harness simulated 400 s in 1.3 s wall clock.
+.[Warning: Inserting with 1 unresolved consistency issue(s). Run p.report() to see them.] 
+[> In bcp/Project/insertInto (line 493)
+In bcp/Harness/build (line 99)
+In tBcpBuild/makeHarness (line 41)
+In tBcpBuild/loadLimiterKeepsThePackOutOfUnderVoltage (line 299)]
+[bcp] BMS block inserted into "tb_limiter".
+BMS: Ts=0.01 s, 14S, protection OV 4.25 V / UV 2.50 V per cell
+     charge rate: 21.75 A permitted (I_chg_limit to the charger)
+     charge trips:    27.19 A held 10.0 s   |  34.80 A held 0.10 s
+     discharge trips: 247.5 A held 10.0 s   |  371.3 A held 0.10 s
+     load limiter: full load above 2.780 V/cell, zero at 2.580 V/cell
+                   current foldback 334.2 A -> 371.3 A; closes 20.0/s, reopens 0.25/s
+                   soft-start 0.50 s after a discharge inhibit
+     fault recovery: 2.0 s dwell, x3.0 per retry, capped at 60 s; lockout after 3 retries in 30 s
+                     UV clears only after 0.1125 Ah of charge goes back in
+     arbitration: LOAD FIRST, charge only after 0.50 s idle
+     charge window: SOC 85% -> 95%, re-arm below 4.05 V/cell
+     temperature: no input -- held at 25 degC, OT/UT wired but inert
+     load: constant, peak 2200 W, mean 2200 W
+[bcp] Charger block inserted into "tb_limiter".
+Charger: Ts=0.01 s, 14S
+     auto-filled from Molicel INR-21700-P45B 14S5P: 67.5 A supply rating = the pack datasheet maximum (3.00C), taper C/20, R=42.0 mOhm
+     supply rating 67.50 A / 3969 W  ->  CV 4.200 V/cell (58.80 V pack)
+     the charge RATE arrives from the BMS on I_limit, not from here
+     terminate below 1.12 A held for 2.0 s;  re-arm below 4.05 V/cell
+     precharge 2.25 A while any cell is under 3.00 V
+     gains: cell 100.0 A/V + 200.0 A/(V s),  pack 7.14 A/V + 14.29 A/(V s)
+[bcp] Wired 5 of 5 lines between the BMS and the charger.
+
+[bcp] Now wire your battery model to the BMS block:
+    Inport        Name                            Meaning                    
+    ______    ____________    _______________________________________________
+
+      1       {'V_cell'  }    {'per-cell voltage [V]'                       }
+      2       {'SOC_cell'}    {'per-cell SOC'                               }
+      3       {'I_cell'  }    {'per-cell current [A], your model's polarity'}
+      4       {'P_chg'   }    {'from charger P_chg_cmd [W]'                 }
+      5       {'chg_done'}    {'from charger done'                          }
+
+      ...and the BMS output P_load_cmd (or P_net_cmd) to your dynamic load.
+      Full procedure: docs/INSTALL.md
+
+[bcp] Harness "tb_limiter" built. Plant 0.001 s, BMS 0.01 s. Simulate with h.simulate(stopTime).
+[bcp] Harness simulated 400 s in 1.2 s wall clock.
+.[bcp] BMS block inserted into "tb_chatter".
+BMS: Ts=0.01 s, 14S, protection OV 4.25 V / UV 2.50 V per cell
+     charge rate: 21.75 A permitted (I_chg_limit to the charger)
+     charge trips:    27.19 A held 10.0 s   |  34.80 A held 0.10 s
+     discharge trips: 247.5 A held 10.0 s   |  371.3 A held 0.10 s
+     load limiter: full load above 2.780 V/cell, zero at 2.580 V/cell
+                   current foldback 334.2 A -> 371.3 A; closes 20.0/s, reopens 0.25/s
+                   soft-start 0.50 s after a discharge inhibit
+     fault recovery: 2.0 s dwell, x3.0 per retry, capped at 60 s; lockout after 3 retries in 30 s
+                     UV clears only after 0.1125 Ah of charge goes back in
+     arbitration: LOAD FIRST, charge only after 0.50 s idle
+     charge window: SOC 85% -> 95%, re-arm below 4.05 V/cell
+     temperature: no input -- held at 25 degC, OT/UT wired but inert
+     load: pulse, peak 3400 W, mean 1600 W
+[bcp] Charger block inserted into "tb_chatter".
+Charger: Ts=0.01 s, 14S
+     auto-filled from Molicel INR-21700-P45B 14S5P: 67.5 A supply rating = the pack datasheet maximum (3.00C), taper C/20, R=42.0 mOhm
+     supply rating 67.50 A / 3969 W  ->  CV 4.200 V/cell (58.80 V pack)
+     the charge RATE arrives from the BMS on I_limit, not from here
+     terminate below 1.12 A held for 2.0 s;  re-arm below 4.05 V/cell
+     precharge 2.25 A while any cell is under 3.00 V
+     gains: cell 100.0 A/V + 200.0 A/(V s),  pack 7.14 A/V + 14.29 A/(V s)
+[bcp] Wired 5 of 5 lines between the BMS and the charger.
+
+[bcp] Now wire your battery model to the BMS block:
+    Inport        Name                            Meaning                    
+    ______    ____________    _______________________________________________
+
+      1       {'V_cell'  }    {'per-cell voltage [V]'                       }
+      2       {'SOC_cell'}    {'per-cell SOC'                               }
+      3       {'I_cell'  }    {'per-cell current [A], your model's polarity'}
+      4       {'P_chg'   }    {'from charger P_chg_cmd [W]'                 }
+      5       {'chg_done'}    {'from charger done'                          }
+
+      ...and the BMS output P_load_cmd (or P_net_cmd) to your dynamic load.
+      Full procedure: docs/INSTALL.md
+
+[bcp] Harness "tb_chatter" built. Plant 0.001 s, BMS 0.01 s. Simulate with h.simulate(stopTime).
+[bcp] Harness simulated 600 s in 1.7 s wall clock.
+.[bcp] BMS block inserted into "tb_reinsert".
+BMS: Ts=0.01 s, 14S, protection OV 4.25 V / UV 2.50 V per cell
+     charge rate: 21.75 A permitted (I_chg_limit to the charger)
+     charge trips:    27.19 A held 10.0 s   |  34.80 A held 0.10 s
+     discharge trips: 247.5 A held 10.0 s   |  371.3 A held 0.10 s
+     load limiter: full load above 2.780 V/cell, zero at 2.580 V/cell
+                   current foldback 334.2 A -> 371.3 A; closes 20.0/s, reopens 0.25/s
+                   soft-start 0.50 s after a discharge inhibit
+     fault recovery: 2.0 s dwell, x3.0 per retry, capped at 60 s; lockout after 3 retries in 30 s
+                     UV clears only after 0.1125 Ah of charge goes back in
+     arbitration: LOAD FIRST, charge only after 1.00 s idle
+     charge window: SOC 85% -> 95%, re-arm below 4.05 V/cell
+     temperature: no input -- held at 25 degC, OT/UT wired but inert
+     load: pulse, peak 800 W, mean 160 W
+[bcp] Charger block inserted into "tb_reinsert".
+Charger: Ts=0.01 s, 14S
+     auto-filled from Molicel INR-21700-P45B 14S5P: 67.5 A supply rating = the pack datasheet maximum (3.00C), taper C/20, R=42.0 mOhm
+     supply rating 67.50 A / 3969 W  ->  CV 4.200 V/cell (58.80 V pack)
+     the charge RATE arrives from the BMS on I_limit, not from here
+     terminate below 1.12 A held for 2.0 s;  re-arm below 4.05 V/cell
+     precharge 2.25 A while any cell is under 3.00 V
+     gains: cell 100.0 A/V + 200.0 A/(V s),  pack 7.14 A/V + 14.29 A/(V s)
+[bcp] Wired 5 of 5 lines between the BMS and the charger.
+
+[bcp] Now wire your battery model to the BMS block:
+    Inport        Name                            Meaning                    
+    ______    ____________    _______________________________________________
+
+      1       {'V_cell'  }    {'per-cell voltage [V]'                       }
+      2       {'SOC_cell'}    {'per-cell SOC'                               }
+      3       {'I_cell'  }    {'per-cell current [A], your model's polarity'}
+      4       {'P_chg'   }    {'from charger P_chg_cmd [W]'                 }
+      5       {'chg_done'}    {'from charger done'                          }
+
+      ...and the BMS output P_load_cmd (or P_net_cmd) to your dynamic load.
+      Full procedure: docs/INSTALL.md
+
+[bcp] Harness "tb_reinsert" built. Plant 0.001 s, BMS 0.01 s. Simulate with h.simulate(stopTime).
+[Warning: Inserting with 1 unresolved consistency issue(s). Run p.report() to see them.] 
+[> In bcp/Project/insertInto (line 493)
+In tBcpBuild/reinsertingReplacesRatherThanAccumulates (line 366)]
+[bcp] BMS block REPLACED in "tb_reinsert" -- redraw its wires.
+BMS: Ts=0.01 s, 14S, protection OV 4.25 V / UV 2.50 V per cell
+     charge rate: 21.75 A permitted (I_chg_limit to the charger)
+     charge trips:    27.19 A held 10.0 s   |  34.80 A held 0.10 s
+     discharge trips: 247.5 A held 10.0 s   |  371.3 A held 0.10 s
+     load limiter: full load above 2.780 V/cell, zero at 2.580 V/cell
+                   current foldback 334.2 A -> 371.3 A; closes 20.0/s, reopens 0.25/s
+                   soft-start 0.50 s after a discharge inhibit
+     fault recovery: 2.0 s dwell, x3.0 per retry, capped at 60 s; lockout after 3 retries in 30 s
+                     UV clears only after 0.1125 Ah of charge goes back in
+     arbitration: LOAD FIRST, charge only after 3.00 s idle
+     charge window: SOC 85% -> 95%, re-arm below 4.05 V/cell
+     temperature: no input -- held at 25 degC, OT/UT wired but inert
+     load: pulse, peak 800 W, mean 160 W
+[bcp] Charger block REPLACED in "tb_reinsert" -- redraw its wires.
+Charger: Ts=0.01 s, 14S
+     auto-filled from Molicel INR-21700-P45B 14S5P: 67.5 A supply rating = the pack datasheet maximum (3.00C), taper C/20, R=42.0 mOhm
+     supply rating 67.50 A / 3969 W  ->  CV 4.200 V/cell (58.80 V pack)
+     the charge RATE arrives from the BMS on I_limit, not from here
+     terminate below 1.12 A held for 2.0 s;  re-arm below 4.05 V/cell
+     precharge 2.25 A while any cell is under 3.00 V
+     gains: cell 100.0 A/V + 200.0 A/(V s),  pack 7.14 A/V + 14.29 A/(V s)
+[bcp] Wired 5 of 5 lines between the BMS and the charger.
+
+[bcp] Now wire your battery model to the BMS block:
+    Inport        Name                            Meaning                    
+    ______    ____________    _______________________________________________
+
+      1       {'V_cell'  }    {'per-cell voltage [V]'                       }
+      2       {'SOC_cell'}    {'per-cell SOC'                               }
+      3       {'I_cell'  }    {'per-cell current [A], your model's polarity'}
+      4       {'P_chg'   }    {'from charger P_chg_cmd [W]'                 }
+      5       {'chg_done'}    {'from charger done'                          }
+
+      ...and the BMS output P_load_cmd (or P_net_cmd) to your dynamic load.
+      Full procedure: docs/INSTALL.md
+
+. [bcp] BMS block inserted into "tb_rates".
+BMS: Ts=0.01 s, 14S, protection OV 4.25 V / UV 2.50 V per cell
+     charge rate: 21.75 A permitted (I_chg_limit to the charger)
+     charge trips:    27.19 A held 10.0 s   |  34.80 A held 0.10 s
+     discharge trips: 247.5 A held 10.0 s   |  371.3 A held 0.10 s
+     load limiter: full load above 2.780 V/cell, zero at 2.580 V/cell
+                   current foldback 334.2 A -> 371.3 A; closes 20.0/s, reopens 0.25/s
+                   soft-start 0.50 s after a discharge inhibit
+     fault recovery: 2.0 s dwell, x3.0 per retry, capped at 60 s; lockout after 3 retries in 30 s
+                     UV clears only after 0.1125 Ah of charge goes back in
+     arbitration: LOAD FIRST, charge only after 1.00 s idle
+     charge window: SOC 85% -> 95%, re-arm below 4.05 V/cell
+     temperature: no input -- held at 25 degC, OT/UT wired but inert
+     load: pulse, peak 800 W, mean 160 W
+[bcp] Charger block inserted into "tb_rates".
+Charger: Ts=0.01 s, 14S
+     auto-filled from Molicel INR-21700-P45B 14S5P: 67.5 A supply rating = the pack datasheet maximum (3.00C), taper C/20, R=42.0 mOhm
+     supply rating 67.50 A / 3969 W  ->  CV 4.200 V/cell (58.80 V pack)
+     the charge RATE arrives from the BMS on I_limit, not from here
+     terminate below 1.12 A held for 2.0 s;  re-arm below 4.05 V/cell
+     precharge 2.25 A while any cell is under 3.00 V
+     gains: cell 100.0 A/V + 200.0 A/(V s),  pack 7.14 A/V + 14.29 A/(V s)
+[bcp] Wired 5 of 5 lines between the BMS and the charger.
+
+[bcp] Now wire your battery model to the BMS block:
+    Inport        Name                            Meaning                    
+    ______    ____________    _______________________________________________
+
+      1       {'V_cell'  }    {'per-cell voltage [V]'                       }
+      2       {'SOC_cell'}    {'per-cell SOC'                               }
+      3       {'I_cell'  }    {'per-cell current [A], your model's polarity'}
+      4       {'P_chg'   }    {'from charger P_chg_cmd [W]'                 }
+      5       {'chg_done'}    {'from charger done'                          }
+
+      ...and the BMS output P_load_cmd (or P_net_cmd) to your dynamic load.
+      Full procedure: docs/INSTALL.md
+
+[bcp] Harness "tb_rates" built. Plant 0.001 s, BMS 0.01 s. Simulate with h.simulate(stopTime).
+[bcp] "tb_rates": FixedStep set to 0.001 s (was 0.003).
+       0.01 are now 10 fixed steps.
+.[Warning: Inserting with 2 unresolved consistency issue(s). Run p.report() to see them.] 
+[> In bcp/Project/insertInto (line 493)
+In bcp/Harness/build (line 99)
+In tBcpBuild/makeHarness (line 41)
+In tBcpBuild/loadWaveformInTheModelMatchesThePreview (line 405)]
+[bcp] BMS block inserted into "tb_waveform".
+BMS: Ts=0.01 s, 14S, protection OV 4.25 V / UV 2.50 V per cell
+     charge rate: 21.75 A permitted (I_chg_limit to the charger)
+     charge trips:    27.19 A held 10.0 s   |  34.80 A held 0.10 s
+     discharge trips: 247.5 A held 10.0 s   |  371.3 A held 0.10 s
+     load limiter: full load above 2.780 V/cell, zero at 2.580 V/cell
+                   current foldback 334.2 A -> 371.3 A; closes 20.0/s, reopens 0.25/s
+                   soft-start 0.50 s after a discharge inhibit
+     fault recovery: 2.0 s dwell, x3.0 per retry, capped at 60 s; lockout after 3 retries in 30 s
+                     UV clears only after 0.1125 Ah of charge goes back in
+     arbitration: charging DISABLED (load only)
+     temperature: no input -- held at 25 degC, OT/UT wired but inert
+     load: pulse, peak 650 W, mean 230 W
+[bcp] Charger block inserted into "tb_waveform".
+Charger: Ts=0.01 s, 14S
+     auto-filled from Molicel INR-21700-P45B 14S5P: 67.5 A supply rating = the pack datasheet maximum (3.00C), taper C/20, R=42.0 mOhm
+     supply rating 67.50 A / 3969 W  ->  CV 4.200 V/cell (58.80 V pack)
+     the charge RATE arrives from the BMS on I_limit, not from here
+     terminate below 1.12 A held for 2.0 s;  re-arm below 4.05 V/cell
+     precharge 2.25 A while any cell is under 3.00 V
+     gains: cell 100.0 A/V + 200.0 A/(V s),  pack 7.14 A/V + 14.29 A/(V s)
+[bcp] Wired 5 of 5 lines between the BMS and the charger.
+
+[bcp] Now wire your battery model to the BMS block:
+    Inport        Name                            Meaning                    
+    ______    ____________    _______________________________________________
+
+      1       {'V_cell'  }    {'per-cell voltage [V]'                       }
+      2       {'SOC_cell'}    {'per-cell SOC'                               }
+      3       {'I_cell'  }    {'per-cell current [A], your model's polarity'}
+      4       {'P_chg'   }    {'from charger P_chg_cmd [W]'                 }
+      5       {'chg_done'}    {'from charger done'                          }
+
+      ...and the BMS output P_load_cmd (or P_net_cmd) to your dynamic load.
+      Full procedure: docs/INSTALL.md
+
+[bcp] Harness "tb_waveform" built. Plant 0.001 s, BMS 0.01 s. Simulate with h.simulate(stopTime).
+[bcp] Harness simulated 40 s in 0.6 s wall clock.
+.
+Done tBcpBuild
+__________
+
+
+=== tBcpBuild: 12 passed, 0 failed, 0 incomplete ===
+Running tBcpApp
+..[bcp] Pack CV target rescaled 58.80 V -> 84.00 V for the new 20S topology.
+.[bcp] Pack CV target rescaled 58.80 V -> 84.00 V for the new 20S topology.
+......[bcp] Configuration saved to C:\Users\nhamb\AppData\Local\Temp\bcp_app_roundtrip.mat
+.
+Done tBcpApp
+__________
+
+
+=== tBcpApp: 10 passed, 0 failed, 0 incomplete ===
+
+##### TOTAL: 104 passed, 0 failed, 0 incomplete #####
+
+##### harness pulse test #####
+
+=== bcp project ===
+INR-21700-P45B (model tables)  195S1P  (195 cells)
+  capacity      4.49 Ah    energy  3154 Wh
+  voltage       702.00 V nominal,  819.00 V full,  487.50 V empty
+  DC resistance 1887.6 mOhm  (datasheet estimate, not measured)
+  charge        4.3 A standard (0.97C),  13.5 A maximum (3.00C)
+  discharge     45 A continuous (31590 W),  68 A pulse (47385 W)
+
+BMS: Ts=0.01 s, 195S, protection OV 4.25 V / UV 2.50 V per cell
+     charge rate: 4.35 A permitted (I_chg_limit to the charger)
+     charge trips:    5.44 A held 10.0 s   |  6.96 A held 0.10 s
+     discharge trips: 49.5 A held 10.0 s   |  74.3 A held 0.10 s
+     load limiter: full load above 2.780 V/cell, zero at 2.580 V/cell
+                   current foldback 66.9 A -> 74.3 A; closes 20.0/s, reopens 0.25/s
+                   soft-start 0.50 s after a discharge inhibit
+     fault recovery: 2.0 s dwell, x3.0 per retry, capped at 60 s; lockout after 3 retries in 30 s
+                     UV clears only after 0.0225 Ah of charge goes back in
+     arbitration: LOAD FIRST, charge only after 1.00 s idle
+     charge window: SOC 85% -> 95%, re-arm below 4.05 V/cell
+     temperature: no input -- held at 25 degC, OT/UT wired but inert
+
+Charger: Ts=0.01 s, 195S
+     auto-filled from INR-21700-P45B (model tables) 195S1P: 13.5 A supply rating = the pack datasheet maximum (3.00C), taper C/20, R=1887.6 mOhm
+     supply rating 13.50 A / 11056 W  ->  CV 4.200 V/cell (819.00 V pack)
+     the charge RATE arrives from the BMS on I_limit, not from here
+     terminate below 0.22 A held for 2.0 s;  re-arm below 4.05 V/cell
+     precharge 0.45 A while any cell is under 3.00 V
+     gains: cell 31.0 A/V + 62.0 A/(V s),  pack 0.16 A/V + 0.32 A/(V s)
+
+Load: pulse -- peak 31250 W, mean 1042 W, clamp [0 35000] W
+Charge rate: 4.35 A permitted by the BMS, 13.50 A supply rating
+      CC-phase charge time from 20% to 95% at 4.35 A: about 2789 s (ignores the CV taper and any time the load steals)
+
+Consistency: clean.
+
+[bcp] BMS block inserted into "bcp_harness".
+BMS: Ts=0.01 s, 195S, protection OV 4.25 V / UV 2.50 V per cell
+     charge rate: 4.35 A permitted (I_chg_limit to the charger)
+     charge trips:    5.44 A held 10.0 s   |  6.96 A held 0.10 s
+     discharge trips: 49.5 A held 10.0 s   |  74.3 A held 0.10 s
+     load limiter: full load above 2.780 V/cell, zero at 2.580 V/cell
+                   current foldback 66.9 A -> 74.3 A; closes 20.0/s, reopens 0.25/s
+                   soft-start 0.50 s after a discharge inhibit
+     fault recovery: 2.0 s dwell, x3.0 per retry, capped at 60 s; lockout after 3 retries in 30 s
+                     UV clears only after 0.0225 Ah of charge goes back in
+     arbitration: LOAD FIRST, charge only after 1.00 s idle
+     charge window: SOC 85% -> 95%, re-arm below 4.05 V/cell
+     temperature: no input -- held at 25 degC, OT/UT wired but inert
+     load: pulse, peak 31250 W, mean 1042 W
+[bcp] Charger block inserted into "bcp_harness".
+Charger: Ts=0.01 s, 195S
+     auto-filled from INR-21700-P45B (model tables) 195S1P: 13.5 A supply rating = the pack datasheet maximum (3.00C), taper C/20, R=1887.6 mOhm
+     supply rating 13.50 A / 11056 W  ->  CV 4.200 V/cell (819.00 V pack)
+     the charge RATE arrives from the BMS on I_limit, not from here
+     terminate below 0.22 A held for 2.0 s;  re-arm below 4.05 V/cell
+     precharge 0.45 A while any cell is under 3.00 V
+     gains: cell 31.0 A/V + 62.0 A/(V s),  pack 0.16 A/V + 0.32 A/(V s)
+[bcp] Wired 5 of 5 lines between the BMS and the charger.
+
+[bcp] Now wire your battery model to the BMS block:
+    Inport        Name                            Meaning                    
+    ______    ____________    _______________________________________________
+
+      1       {'V_cell'  }    {'per-cell voltage [V]'                       }
+      2       {'SOC_cell'}    {'per-cell SOC'                               }
+      3       {'I_cell'  }    {'per-cell current [A], your model's polarity'}
+      4       {'P_chg'   }    {'from charger P_chg_cmd [W]'                 }
+      5       {'chg_done'}    {'from charger done'                          }
+
+      ...and the BMS output P_load_cmd (or P_net_cmd) to your dynamic load.
+      Full procedure: docs/INSTALL.md
+
+[bcp] Harness "bcp_harness" built. Plant 0.001 s, BMS 0.01 s. Simulate with h.simulate(stopTime).
+[bcp] Harness simulated 310 s in 29.2 s wall clock.
+
+=== harness summary ===
+  SOC            60.0% -> 64.2%
+  cell voltage   3.243 .. 3.889 V
+  pack current   -48.9 .. 4.4 A
+  load active    4% of the run
+  charge enabled 94% of the run
+  arbitration    0=charging enabled (94%), 1=load is active (4%), 2=waiting out the quiet dwell (2%)
+  discharge lim  unlimited (100%)
+  faults latched none
+
+
+=== pulse195 verification ===
+  [PASS] no fault latched                                     max fault mask = 0 (none)
+  [PASS] contactor closed throughout                          100.0% of samples closed
+  [PASS] never entered FAULT or LOCKOUT state                 states seen: [1 2 3]
+  [PASS] protection never re-tripped (no fault chatter)       0 fault rising edge(s); more than one inside a run means the latch is cycling -- read diag(11) dcl_frac and diag(13) retry_count, and see alg/bcp_load_limiter.m
+  [PASS] retry counter stayed at zero                         peak retry count 0 against a lockout at 3
+  [PASS] auto-recovery was never withdrawn                    0 sample(s) in lockout
+  [PASS] pulse count                                          6 pulses in 310 s, expected about 6
+  [PASS] pulse width                                          2.0000 .. 2.0000 s, want 2.000 s (tol 3 steps = 0.030 s)
+  [PASS] pulse period                                         60.0000 .. 60.0000 s, want 60.000 s
+  [PASS] commanded pulse power                                peak P_load_cmd = 31250.0 W, want 31250 W
+  [PASS] zero load between pulses                             max |P_load_cmd| off-pulse = 0 W (edges excluded: 50 ms ramp)
+  [PASS] pulse edges are ramps, not steps                     steepest edge 6.25e+05 W/s against a 6.25e+05 W/s commanded slew; a step would be about 3.13e+06 W/s
+  [PASS] pack current is negative (discharging) during pulses median I_pack during pulses = -48.63 A; positive here means I_sign is backwards for this pack model
+  [PASS] pulse current matches the constant-power root        measured 48.43-48.94 A vs predicted 48.42-48.94 A, worst error 0.02%
+  [PASS] pack actually delivered the commanded watts          V*I = 31250-31250 W against a 31250 W command, worst error 0.00%
+  [PASS] pulse current stayed under the fast discharge trip   peak 48.94 A against a 74 A fast trip (52% margin); the 50 A sustained trip needs 10 s of dwell and the pulse is shorter
+  [PASS] SOC drop per pulse = integrated current / capacity   measured 0.5970% vs coulomb-counted 0.5971% per pulse, worst error 0.02%
+  [PASS] SOC rise per charge window = integrated current / capacity measured 1.5314% vs coulomb-counted 1.5315% per window, worst error 0.01%
+  [PASS] charger held off for the whole of every pulse        0 samples with the charger enabled during a pulse
+  [PASS] charge current sits at the permitted charge rate     median 4.350 A against a 4.350 A permitted rate
+  [PASS] charge current never exceeded the BMS ceiling        peak command 4.350 A, ceiling 4.350 A
+  [PASS] measured charge current never reached the charge trip peak 4.350 A against a 5.4 A trip
+  [PASS] charge command is zero whenever the charger is off   max |I_chg_cmd| while disabled = 0 A
+  [PASS] P_net_cmd = P_load_cmd - P_chg_cmd                   exact at a 1-sample charge-power lag (worst disagreement 0 W)
+  [PASS] charger waited out the quiet dwell                   re-enable delay within 0.010 s of the 1.00 s dwell
+  [PASS] BMS reports DISCHARGE during pulses                  100.0% of pulse samples in state 3
+  [PASS] BMS reports CHARGE while charging                    100.0% of charging samples in state 2
+  [PASS] cell voltage stayed inside the trip band             3.243 .. 3.889 V against trips 2.50 / 4.25 V
+  [PASS] V_pack = mean(V_cell) x S                            worst disagreement 0.0000 V over the run
+  [PASS] load limiter never derated the pulse                 lowest dcl_frac 1.0000, lowest cell 3.243 V against a foldback band of 2.580 .. 2.780 V
+  [PASS] load was never held off or soft-started              limit states seen: unlimited
+  [PASS] no charge was owed against an under-voltage latch    peak uv_charge_Ah = 0.0000 Ah (requirement is 0.0225 Ah)
+  [PASS] pack model SOC stayed in range before clamping       lowest unclamped SOC 58.5065%. Negative means the pack was discharged past its rated capacity; the battery model does not stop, so the BMS clamps at 0 and the results past that point are not physical
+  [PASS] pack net-charged over the run                        SOC 59.97% -> 64.19% (+4.21%)
+  [PASS] pack started at the requested SOC                    started at 59.97%, asked for 60.00%
+  ---- 35 of 35 checks passed.
+
+
+##### HARNESS pulse195 ok = 1 #####
+[Warning: Unable to close the model 'bcp_harness' because it has been changed. To save changes, use close_system('bcp_harness',1). To
+discard changes, use close_system('bcp_harness',0).] 

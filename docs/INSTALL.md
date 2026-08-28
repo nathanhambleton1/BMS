@@ -149,9 +149,9 @@ reason to make you draw them.
 
 **Copy the two together, not one at a time.** Three of those five lines carry a
 vector or a limit that looks like any other number on a canvas, and the BMS's
-`pack_meas` (7 wide) and `diag` (10 wide) outputs are adjacent. Redraw them by
+`pack_meas` (7 wide) and `diag` (17 wide) outputs are adjacent. Redraw them by
 hand and the classic result is `diag` wired into the charger's `pack_meas`
-input, reported as a width mismatch — "expected `[7]`, got `[10]`" — against the
+input, reported as a width mismatch — "expected `[7]`, got `[17]`" — against the
 charger's input delay, which is not where the mistake is.
 
 **The blocks carry their own constants.** Every threshold is compiled in as a
@@ -297,9 +297,16 @@ disp(bcp.Signals.diagNames())
 % decode the codes into words
 bcp.Signals.arbReason(2)      % 'waiting out the quiet dwell'
 bcp.Signals.chargerMode(3)    % 'CV'
-bcp.Signals.faultBits(5)      % 'OV + OC_charge'
+bcp.Signals.faultBits(10)     % 'UV + OC_discharge' -- masks are SUMS, not codes
+bcp.Signals.limitState(1)     % 'voltage foldback'
 bcp.Signals.describe()        % the pack_meas wire contract
+bcp.Signals.faultTable()      % every fault mask a run is likely to show
 ```
+
+The `diag` channels most worth putting on a scope the first time you run the
+installed blocks: `dcl_frac` (11) and `limit_state` (12) show the load limiter
+derating the discharge, and `soc_raw_min` (17) shows whether your battery model's
+state of charge has left 0..1. [blocks.md](blocks.md) lists all seventeen.
 
 ---
 

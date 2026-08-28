@@ -23,7 +23,8 @@ function [ok, T, S] = pulse195_verify(out, p, ct, varargin)
 %     so agreeing is evidence rather than a tautology.
 
 opt = struct('Period_s',60, 'Pulse_s',2, 'P_load_W',31250, 'Start_s',5, ...
-             'SOC_init',[], 'I_tol_pct',4, 'P_tol_pct',3, 'SOC_tol_pct',8, ...
+             'Edge_s',0.05, 'SOC_init',[], ...
+             'I_tol_pct',4, 'P_tol_pct',3, 'SOC_tol_pct',8, ...
              'Verbose',true);
 for k = 1:2:numel(varargin)
     assert(isfield(opt, varargin{k}), 'pulse195:Option', ...
@@ -45,8 +46,26 @@ chk(end+1,:) = {'no fault latched', maxFault == 0, ...
 chk(end+1,:) = {'contactor closed throughout', all(S.contactor > 0.5), ...
     sprintf('%.1f%% of samples closed', 100*mean(S.contactor > 0.5))};
 
-chk(end+1,:) = {'never entered FAULT state', ~any(S.state == 4), ...
+chk(end+1,:) = {'never entered FAULT or LOCKOUT state', ...
+    ~any(S.state == 4) && ~any(S.state == 5), ...
     sprintf('states seen: %s', mat2str(unique(round(S.state)).'))};
+
+%  A latch that sets, clears and sets again is the failure mode the load
+%  limiter and the retry backoff exist to prevent, and it is invisible in
+%  "max fault mask" -- a run that chattered thirty times and a run that tripped
+%  once report the same maximum. Count the rising edges instead.
+faultEdges = sum(diff([0; double(S.faults > 0)]) > 0);
+chk(end+1,:) = {'protection never re-tripped (no fault chatter)', faultEdges == 0, ...
+    sprintf(['%d fault rising edge(s); more than one inside a run means the ', ...
+             'latch is cycling -- read diag(11) dcl_frac and diag(13) ', ...
+             'retry_count, and see alg/bcp_load_limiter.m'], faultEdges)};
+
+chk(end+1,:) = {'retry counter stayed at zero', max(S.retry_count) == 0, ...
+    sprintf('peak retry count %g against a lockout at %g', ...
+    max(S.retry_count), p.Bms.N_retry_max)};
+
+chk(end+1,:) = {'auto-recovery was never withdrawn', ~any(S.lockout > 0.5), ...
+    sprintf('%d sample(s) in lockout', sum(S.lockout > 0.5))};
 
 %% ---- 2. the load command is the waveform that was asked for -------------
 [pulses, npulse] = local_pulses(S.t, S.P_load, opt.P_load_W/2);
@@ -76,8 +95,30 @@ if npulse > 0
     pk = max(S.P_load);
     chk(end+1,:) = {'commanded pulse power', abs(pk - opt.P_load_W) < 1, ...
         sprintf('peak P_load_cmd = %.1f W, want %.0f W', pk, opt.P_load_W)};
-    chk(end+1,:) = {'zero load between pulses', max(abs(S.P_load(~onMask))) < 1e-6, ...
-        sprintf('max |P_load_cmd| off-pulse = %.3g W', max(abs(S.P_load(~onMask))))};
+
+    % The pulse edges are RAMPS now (pulse195_setup section 6), and local_pulses
+    % finds the half-amplitude crossings, so the lower half of each ramp lies
+    % OUTSIDE onMask by construction and is not "load during a gap". Widening
+    % the mask by the commanded edge time plus a couple of samples is what makes
+    % this check about the gaps again rather than about the ramp.
+    %
+    % The width and period checks above need no such allowance: a symmetric ramp
+    % moves both half-crossings by the same amount, so the measured width is
+    % unchanged. That is why the threshold is half amplitude and not, say, 10%.
+    gap = ~local_mask(S.t, local_widen(pulses, opt.Edge_s + 2*S.dt));
+    chk(end+1,:) = {'zero load between pulses', max(abs(S.P_load(gap))) < 1e-6, ...
+        sprintf('max |P_load_cmd| off-pulse = %.3g W (edges excluded: %.0f ms ramp)', ...
+        max(abs(S.P_load(gap))), 1000*opt.Edge_s)};
+
+    edges = local_mask(S.t, local_widen(pulses, opt.Edge_s + 2*S.dt)) & ~onMask;
+    if any(edges)
+        maxSlew = max(abs(diff(S.P_load))) / S.dt;
+        chk(end+1,:) = {'pulse edges are ramps, not steps', ...
+            maxSlew < 1.5 * opt.P_load_W / opt.Edge_s, ...
+            sprintf(['steepest edge %.3g W/s against a %.3g W/s commanded slew; ', ...
+                     'a step would be about %.3g W/s'], ...
+            maxSlew, opt.P_load_W/opt.Edge_s, opt.P_load_W/S.dt)};
+    end
 else
     onMask = false(size(S.t));
     chk(end+1,:) = {'pulse present', false, 'no pulses found in the run'};
@@ -266,11 +307,63 @@ vErr = max(abs(S.V_pack - S.V_mean*Sc));
 chk(end+1,:) = {'V_pack = mean(V_cell) x S', vErr < 0.5, ...
     sprintf('worst disagreement %.4f V over the run', vErr)};
 
-%% ---- 7. the pack came back up ------------------------------------------
-%  Not S.SOC(1): pack_meas is read through the BMS's input unit delays, so its
-%  first sample is whatever those delays initialise to and not the pack's
-%  starting SOC. Step past them before calling anything the starting value.
+%% ---- 6b. the load limiter, and the pack model's SOC bookkeeping ---------
+%  k0 steps past the BMS block's input unit delays. Their initial conditions are
+%  what pack_meas and diag report for the first few samples -- SOC in particular
+%  is seeded below SOC_restart on purpose (see bcp.BmsBuilder.initialConditions)
+%  -- so anything read before k0 is the BMS's opening guess and not a
+%  measurement of the pack.
 k0 = find(S.t >= S.t(1) + 10*S.dt, 1, 'first');
+
+%  The design pulse is supposed to run UNLIMITED at these states of charge.
+%  pulse195_setup section 6 has the arithmetic: 31250 W holds the lowest cell
+%  above 2.78 V/cell -- the top of the foldback band -- down to roughly 15% SOC,
+%  and this run starts at 60% and net-charges. So a limiter that engaged here
+%  would mean the pack, the tables or the thresholds are not what that table
+%  says, and every current and power check above is measuring a derated pulse
+%  rather than the one in the test description.
+%  Measured only where discharging was PERMITTED. dcl_frac is 0 by definition
+%  while a discharge inhibit is asserted, so an unmasked minimum reports 0 for a
+%  run that was held off by protection and never derated -- which reads as the
+%  limiter having taken the load to zero, the opposite of what happened.
+%  limit_state == 4 is the channel that reports being held off.
+dclOk = S.dcl_frac(S.dch_ok > 0.5);
+if isempty(dclOk), dclOk = 1; end
+chk(end+1,:) = {'load limiter never derated the pulse', ...
+    min(dclOk) > 1 - 1e-6, ...
+    sprintf(['lowest dcl_frac %.4f while permitted, lowest cell %.3f V against ', ...
+             'a foldback band of %.3f .. %.3f V'], ...
+    min(dclOk), min(S.V_min), p.Bms.V_fold_end(), p.Bms.V_fold_start())};
+
+chk(end+1,:) = {'load was never held off or soft-started', ...
+    all(S.limit_state < 0.5), ...
+    sprintf('limit states seen: %s', strjoin( ...
+        arrayfun(@(c) bcp.Signals.limitState(c), ...
+                 unique(round(S.limit_state)).', 'UniformOutput', false), ', '))};
+
+chk(end+1,:) = {'no charge was owed against an under-voltage latch', ...
+    max(S.uv_charge) == 0, ...
+    sprintf('peak uv_charge_Ah = %.4f Ah (requirement is %.4f Ah)', ...
+    max(S.uv_charge), p.Bms.Q_uv_reset_Ah)};
+
+%  soc_raw_min is the pack model's SOC BEFORE the BMS clamps it. A Simscape
+%  table_battery integrates coulombs with no floor, so a pack taken past empty
+%  reports a negative SOC indefinitely while its OCV and resistance sit pinned
+%  at their end-of-table values -- see alg/bcp_pack_monitor.m. Everything after
+%  that point in a run describes a cell the model is no longer modelling, so it
+%  is worth an explicit check rather than a note somebody reads afterwards.
+rawMin = min(S.soc_raw_min(k0:end));
+chk(end+1,:) = {'pack model SOC stayed in range before clamping', ...
+    rawMin >= -0.001, ...
+    sprintf(['lowest unclamped SOC %.4f%%. Negative means the pack was ', ...
+             'discharged past its rated capacity; the battery model does not ', ...
+             'stop, so the BMS clamps at 0 and the results past that point are ', ...
+             'not physical'], 100*rawMin)};
+
+%% ---- 7. the pack came back up ------------------------------------------
+%  Read from k0, not from sample 1: pack_meas comes through the BMS's input unit
+%  delays, so its first samples are whatever those delays initialise to and not
+%  the pack's starting SOC.
 chk(end+1,:) = {'pack net-charged over the run', S.SOC(end) > S.SOC(k0), ...
     sprintf('SOC %.2f%% -> %.2f%% (%+.2f%%)', ...
     100*S.SOC(k0), 100*S.SOC(end), 100*(S.SOC(end)-S.SOC(k0)))};
@@ -347,9 +440,21 @@ S.P_chg_cmd  = local_resample(g('chg_P_chg_cmd'),   S.t);
 S.chg_done   = local_resample(g('chg_done'),        S.t);
 
 D = squeeze(g('bms_diag').Data);
-if size(D,1) == 10, D = D.'; end
+if size(D,1) == bcp.Signals.DIAG_NUM, D = D.'; end
 S.diag = interp1(g('bms_diag').Time(:), D, S.t, 'previous', 'extrap');
-S.arb_reason = S.diag(:,3);
+
+% By index into diagNames() rather than by hard-coded column, so adding a diag
+% channel cannot silently rename what these checks are looking at.
+dn = bcp.Signals.diagNames();
+col = @(name) S.diag(:, find(strcmp(dn, name), 1));
+S.arb_reason  = col('arb_reason');
+S.dch_ok      = col('dch_ok');
+S.dcl_frac    = col('dcl_frac');
+S.limit_state = col('limit_state');
+S.retry_count = col('retry_count');
+S.lockout     = col('lockout');
+S.uv_charge   = col('uv_charge_Ah');
+S.soc_raw_min = col('soc_raw_min');
 end
 
 function y = local_resample(ts, t)
@@ -388,4 +493,14 @@ m = false(size(t));
 for k = 1:size(seg,1)
     m = m | (t >= seg(k,1) & t < seg(k,2));
 end
+end
+
+function seg = local_widen(seg, pad)
+%LOCAL_WIDEN  Grow every interval by PAD at both ends.
+%
+%   Used to exclude the commanded ramp on each pulse edge from checks that are
+%   about the flat parts. Intervals may overlap after widening; local_mask ORs
+%   them, so that is harmless.
+seg(:,1) = seg(:,1) - pad;
+seg(:,2) = seg(:,2) + pad;
 end

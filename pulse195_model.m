@@ -21,6 +21,12 @@ function [ok, T, S, out, p] = pulse195_model(varargin)
 %     StopTime_s  simulation length [s].         Default 5 periods + 10.
 %     SOC_init    starting cell SOC.             Default 0.60.
 %     I_sign      pack current polarity, +1 or -1. Default +1; see below.
+%     Edge_s      pulse rise/fall time [s].      Default 0.05; see
+%                 pulse195_setup section 6 for why it is not zero.
+%     LimiterOn   continuous discharge limiting. Default true. Set it false to
+%                 reproduce a result from before alg/bcp_load_limiter.m existed
+%                 -- at low SOC that is the configuration in which the
+%                 under-voltage trip cycles, so it is worth being able to run.
 %     Rebuild     rebuild from the template.     Default true.
 %
 %   THE WIRING THIS FIXES, AND WHY IT MATTERS
@@ -62,7 +68,8 @@ function [ok, T, S, out, p] = pulse195_model(varargin)
 
 opt = struct('Template','untitled', 'Model','pulse195_sim', 'Period_s',60, ...
              'StopTime_s',[], 'SOC_init',0.60, 'I_sign',1, 'Rebuild',true, ...
-             'Pulse_s',2, 'P_load_W',31250, 'Start_s',5);
+             'Pulse_s',2, 'P_load_W',31250, 'Start_s',5, 'Edge_s',0.05, ...
+             'LimiterOn',true);
 for k = 1:2:numel(varargin)
     assert(isfield(opt, varargin{k}), 'pulse195:Option', 'Unknown option "%s".', varargin{k});
     opt.(varargin{k}) = varargin{k+1};
@@ -75,8 +82,10 @@ root = fileparts(mfilename('fullpath'));
 
 %% ---- configuration -------------------------------------------------------
 [p, ct] = pulse195_setup('Period_s',opt.Period_s, 'Pulse_s',opt.Pulse_s, ...
-                         'P_load_W',opt.P_load_W, 'Start_s',opt.Start_s);
-p.Bms.I_sign = opt.I_sign;
+                         'P_load_W',opt.P_load_W, 'Start_s',opt.Start_s, ...
+                         'Edge_s',opt.Edge_s);
+p.Bms.I_sign         = opt.I_sign;
+p.Bms.UseLoadLimiter = opt.LimiterOn;
 p = p.sync();
 p.report();
 
@@ -129,7 +138,8 @@ fprintf('[pulse195] Done in %.1f s wall clock (%.1fx real time).\n', ...
     toc(t0), toc(t0)/opt.StopTime_s);
 
 [ok, T, S] = pulse195_verify(out, p, ct, 'Period_s',opt.Period_s, 'SOC_init',opt.SOC_init, ...
-    'Pulse_s',opt.Pulse_s, 'P_load_W',opt.P_load_W, 'Start_s',opt.Start_s);
+    'Pulse_s',opt.Pulse_s, 'P_load_W',opt.P_load_W, 'Start_s',opt.Start_s, ...
+    'Edge_s',opt.Edge_s);
 end
 
 % =========================================================================

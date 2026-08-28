@@ -1,0 +1,34 @@
+﻿[Warning: Calling STRUCT on an object prevents the object from hiding its implementation details and should thus be avoided. Use DISP or DISPLAY to see the visible public details
+of an object. See 'help struct' for more information.] 
+[> In dump_core (line 4)
+In run (line 112)] 
+[bcp] BMS block inserted into "dump_tmp".
+BMS: Ts=0.01 s, 195S, protection OV 4.25 V / UV 2.50 V per cell
+     charge rate: 4.35 A permitted (I_chg_limit to the charger)
+     charge trips:    5.44 A held 10.0 s   |  6.96 A held 0.10 s
+     discharge trips: 49.5 A held 10.0 s   |  74.3 A held 0.10 s
+     load limiter: full load above 2.780 V/cell, zero at 2.580 V/cell
+                   current foldback 66.9 A -> 74.3 A; closes 20.0/s, reopens 0.25/s
+                   soft-start 0.50 s after a discharge inhibit
+     fault recovery: 2.0 s dwell, x3.0 per retry, capped at 60 s; lockout after 3 retries in 30 s
+                     UV clears only after 0.0225 Ah of charge goes back in
+     arbitration: LOAD FIRST, charge only after 1.00 s idle
+     charge window: SOC 85% -> 95%, re-arm below 4.05 V/cell
+     temperature: no input -- held at 25 degC, OT/UT wired but inert
+     load: pulse, peak 31250 W, mean 1042 W
+matlab.exe : {Error using dump_core (line 9)
+At line:1 char:302
++ ... tch {} } }; & "C:\Program Files\MATLAB\R2025b\bin\matlab.exe" -batch  ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ({Error using dump_core (line 9):String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+SubSystem block does not have a parameter named 'Script'
+
+Error in run (line 112)
+evalin('caller', strcat(scriptStem, ';'));
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ - Show complete stack trace
+} 
+[Warning: Unable to close the model 'dump_tmp' because it has been changed. To save changes, use close_system('dump_tmp',1). To discard
+changes, use close_system('dump_tmp',0).] 
+ERROR: MATLAB error Exit Status: 0x00000001

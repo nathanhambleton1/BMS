@@ -58,9 +58,9 @@ traces.
 The three arrays are not the same width, which means one of them is wired to the
 wrong signal. `p.verifyWiring('myModel')` reports all three widths.
 
-### "Port width mismatch": something expected `[7]` and got `[10]`
+### "Port width mismatch": something expected `[7]` and got `[17]`
 
-The BMS block's `pack_meas` output is **7** wide and its `diag` output is **10**.
+The BMS block's `pack_meas` output is **7** wide and its `diag` output is **17**.
 They are adjacent, unlabelled vectors leaving neighbouring ports, and wiring
 `diag` into the charger's `pack_meas` input is the easy mistake. The error is
 reported against the charger's input delay, whose initial condition is a
@@ -235,6 +235,51 @@ one `Ts` and auto-fill sets `max(2, 20*Ts)`.
 `SOC_restart` too close to `SOC_stop`, or `V_recharge` too close to the CV
 target. Both need real hysteresis. `validate` rejects equal SOC values.
 
+### The fault keeps clearing and re-tripping, and each voltage dip is deeper
+
+This is the cyclic fault chain, and it has a specific cause. Cutting the load
+removes the sag that tripped it, so the pack immediately reads inside the clear
+band, the fault recovers, the full load comes back, and the next sag is deeper
+because the lap cost charge. Each iteration takes energy out and returns almost
+none, so the excursions grow and end up well below the threshold that was
+supposed to prevent them.
+
+Count the **rising edges** on `faults`, not its maximum: a run that tripped once
+and a run that cycled thirty times report the same maximum.
+
+Four things stop it, and all four are on by default. If you are seeing the chain,
+one of them is off or mis-set:
+
+| Symptom on `diag` | Setting to check |
+|---|---|
+| `dcl_frac` stays at 1 right up to the trip | `Bms.UseLoadLimiter` is false |
+| `dcl_frac` drops but too late | the load edge is a step — see the next entry |
+| `uv_charge_Ah` stays 0 and the latch clears anyway | `Bms.Q_uv_reset_Ah` is 0 |
+| `retry_count` climbs and never locks out | `Bms.N_retry_max` is `Inf`, or `Retry_Backoff_x` is 1 |
+
+The full argument is in
+[blocks.md](blocks.md#discharge-limiting-and-why-the-trip-is-not-the-operating-limit)
+and `alg/bcp_load_limiter.m`.
+
+**One transient excursion below the trip is expected and is not the chain.** The
+limiter is feedback, not prediction: it cannot derate a demand it has not yet
+seen at this state of charge, so the *first* large pulse at a new operating point
+reaches the pack's actual equilibrium voltage before the limit closes. Measured
+on the bundled 195S1P pack, 31250 W pulses from 8% SOC:
+
+| Pulse | Lowest cell | `dcl_frac` at start | Time below the 2.50 V trip |
+|---|---|---|---|
+| 1 | 2.4033 V | 1.000 | 0.010 s |
+| 2 | 2.5798 V | 0.834 | 0 |
+| 3–15 | 2.5798 V | 0.829 → 0.749 | 0 |
+
+The first excursion lasts one sample, which is fifty times shorter than
+`t_v_trip`, so it cannot latch — the dwell is what covers it. Afterwards the
+limit is retained (it only reopens while current is flowing) and every subsequent
+pulse is regulated to the bottom of the foldback band exactly. If you need the
+first excursion suppressed too, lengthen the load edge or widen
+`V_fold_band_V` — both give the limiter more samples before the pack arrives.
+
 ### Protection chatters, and the simulation crawls
 
 `t_v_trip` or `t_i_trip` near zero. An instantaneous trip on a stiff DAE
@@ -249,8 +294,24 @@ A hard pulse edge is a step discontinuity in the algebraic constraint the
 Simscape solver has to satisfy. Set **Slew limit** on the Load tab to something
 finite — it turns each edge into a ramp the solver can walk across.
 
-It is a modelling aid rather than physics, so it is off by default. If you use
-it, say so when you report results: you have changed the load the pack sees.
+**There is now a second reason to set it, and it is the stronger one.** The load
+limiter reads pack voltage through the BMS block's input unit delay and can only
+change the command on the following sample, so it has **two samples of loop
+latency** whatever `Fold_Fall_per_s` is set to. A step edge therefore reaches
+full demand before the limiter has responded to any part of it. Give the edge at
+least four samples — 40 ms at `Ts = 0.01` — so the limiter sees the demand rising
+and has acted twice by the time it arrives.
+
+`bcp.Project.check()` reports a step edge as an issue when the peak demand
+exceeds half the pack's continuous discharge rating, which is where two samples
+starts to matter. On a small load relative to the pack it says nothing, because
+there a step edge is harmless.
+
+It is still a modelling aid rather than physics. If you use it, say so when you
+report results: you have changed the load the pack sees. `pulse195_setup.m`
+section 6 works out the energy cost for the bundled test — the rise gives up
+about half an edge time at full power and the fall gains the same back, so the
+two cancel to first order.
 
 ---
 
@@ -270,14 +331,113 @@ open, because the load is the cure. Only over-current and over-temperature
 isolate the pack. See
 [blocks.md](blocks.md#fault-bits).
 
-### The pack oscillates at its floor under a heavy load
+### The load is derated and `dcl_frac` is below 1, with no fault latched
 
-Under-voltage inhibits the load, the load goes idle, the arbiter grants the
-charger a window, the pack recovers, the fault clears, the load resumes, and the
-pack sags again. That limit cycle is the correct emergent behaviour of a pack
-being asked for more than it has, and it is what stops protection from
-deadlocking against its own load. If you want it to stop, the load is too big
-for the pack — which is the finding.
+That is the load limiter working, and it is the intended behaviour near the end
+of a discharge. It derates continuously as the cells approach their cutoff so
+the trip does not have to fire — see
+[blocks.md](blocks.md#discharge-limiting-and-why-the-trip-is-not-the-operating-limit).
+
+Read `diag(12)` (`limit_state`) for which constraint is binding:
+
+| `limit_state` | Meaning |
+|---|---|
+| 0 | nothing binding |
+| 1 | voltage foldback — the lowest cell is in the band above `V_uv_trip` |
+| 2 | current foldback — the draw is approaching `I_dch_peak_A` |
+| 3 | soft-start ramp after a discharge inhibit |
+| 4 | held off by protection |
+
+If the limiter engages **earlier in the run than you expected**, the pack cannot
+deliver the load at that state of charge — which is a finding, not a fault.
+Compute `P_max = Voc²/(4R)` at that SOC and compare it against your demand;
+`pulse195_setup.m` section 6 works the arithmetic for the bundled pack. If you
+want the pulse to run unlimited over a wider range, widen the band with
+`V_fold_band_V` / `V_fold_margin_V` — but the trip is then closer, and below
+`P_max` there is no setting that makes an impossible demand possible.
+
+### `faults` reads 5, or 10, and that value is not in the fault-bit table
+
+Because it is not a fault code — it is a **sum**. `faults` is a bitmask and
+simultaneous faults OR together:
+
+```text
+ 5 = 4 + 1 = OC_charge    + OV
+10 = 8 + 2 = OC_discharge + UV
+```
+
+`bcp.Signals.faultBits(10)` prints `UV + OC_discharge`, and
+`bcp.Signals.faultTable()` lists every mask you are likely to see with what each
+one means.
+
+**Seeing 4 for a moment and then 5 — or 8 and then 10 — is one event, not two.**
+An over-current confirms in `t_i_trip` (0.1 s by default) and a voltage fault in
+`t_v_trip` (0.5 s), so an over-current large enough to also breach the voltage
+window shows the current bit first, alone, and picks up the voltage bit about
+0.4 s later. Nothing changed state in between; a second, slower confirmation
+completed.
+
+On a discharge, `10` means the draw was well past what the pack could deliver at
+that state of charge. Check `dcl_frac` on `diag(11)`: if it never left 1, the
+load limiter is off and the trip is doing work it should not have to.
+
+`12` (`4 + 8`, over-current in **both** directions) is different in kind — no
+load does that. It means `I_sign` is wrong or the current array is miswired.
+
+### `state` reports 5, which is not INIT/IDLE/CHARGE/DISCHARGE/FAULT
+
+5 is **LOCKOUT**: a fault is latched *and* auto-recovery has been withdrawn
+because the retry counter reached `Bms.N_retry_max`. Only a rising edge on the
+reset port will clear it now, and that clears the counter too.
+
+It means the pack faulted, recovered and faulted again `N_retry_max` times inside
+`t_retry_window_s`. That is not N independent faults — it is one condition that
+recovery does not fix. Read `diag(13)` for the count and see the cyclic-fault
+entry above for what to check.
+
+`Bms.N_retry_max = Inf` disables the lockout and leaves only the dwell backoff.
+
+### The SOC goes slightly negative
+
+That is the battery model, not the BMS. A Simscape `table_battery` integrates
+coulombs over the *rated* capacity with **no floor**, so discharging past empty
+drives SOC below zero and the component neither clamps nor complains. Its OCV and
+resistance *tables* are clamped (`extrapolation_option = nearest`), so past empty
+the cell holds its end-of-table voltage and resistance and goes on sourcing
+current forever at a plausible-looking terminal voltage. The pack model has no
+concept of being empty.
+
+`Bms.SOC_clamp` (on by default) limits the SOC the BMS *reports* to 0–1, because
+every SOC comparison in this package is written against a 0–1 quantity. The
+unclamped minimum is published on `diag(17)` (`soc_raw_min`) so the excursion
+stays visible.
+
+- **A fraction of a percent** is coulomb-counting overshoot against a rated
+  rather than measured capacity. Normal, and not worth chasing.
+- **A sustained negative reading** means the run kept discharging a pack the
+  model was no longer modelling. Everything after that point describes nothing;
+  treat it as the end of the useful part of the run.
+
+If you are hitting it on a long discharge, the run is doing what it is supposed
+to and simply going on too long. Shorten the run, start higher, or enable the
+charger.
+
+### The load never comes back after an under-voltage, and the pack looks fine
+
+By design. An under-voltage latch now needs `Bms.Q_uv_reset_Ah` of **charge** to
+have gone back in before it will clear — resting is not recovery. A cell that
+returns to 3.0 V the instant the load is removed has stopped losing energy, not
+gained any, and it is still at its end of discharge. Recovering on that reading
+is exactly what lets the cyclic fault chain restart.
+
+Read `diag(15)` (`uv_charge_Ah`) against `Bms.Q_uv_reset_Ah`: that pair tells you
+how far along the requirement is.
+
+**On a load-only run the latch is therefore permanent.** With `ChargeEnabled`
+false or no charger wired, the first under-voltage event ends the discharge for
+the rest of the run — which is the correct end of a discharge test, but it does
+mean no more load current. `p.check()` says so before you build. Set
+`Q_uv_reset_Ah = 0` for the old rest-is-enough behaviour, or enable the charger.
 
 ### A discharge pulse goes above the discharge trip and nothing happens
 
@@ -334,16 +494,41 @@ temperature signal from your battery model and turn the port on.
 out = sim('myModel');
 
 bcp.Signals.describe()                    % the pack_meas wire contract
-bcp.Signals.diagNames()                   % the diag wire contract
+bcp.Signals.diagNames()                   % the diag wire contract, 17 channels
 bcp.Signals.arbReason(2)                  % 'waiting out the quiet dwell'
 bcp.Signals.chargerMode(3)                % 'CV'
-bcp.Signals.bmsState(4)                   % 'FAULT'
-bcp.Signals.faultBits(5)                  % 'OV + OC_charge'
+bcp.Signals.bmsState(5)                   % 'LOCKOUT'
+bcp.Signals.faultBits(10)                 % 'UV + OC_discharge'
+bcp.Signals.limitState(1)                 % 'voltage foldback'
+bcp.Signals.faultTable()                  % every mask you are likely to see
 ```
 
 Every output of both blocks is marked for logging by the builders, so
 `out.logsout` already has `bms_*` and `chg_*` elements without you adding a
 single scope.
+
+Pull a `diag` channel by NAME rather than by column number — the width has
+changed once already and it will change again:
+
+```matlab
+D  = squeeze(out.logsout.getElement('bms_diag').Values.Data);
+if size(D,1) == bcp.Signals.DIAG_NUM, D = D.'; end
+dn = bcp.Signals.diagNames();
+dcl = D(:, strcmp(dn, 'dcl_frac'));
+```
+
+**The four numbers worth looking at first when a run surprises you:**
+
+```matlab
+faults = squeeze(out.logsout.getElement('bms_faults').Values.Data);
+sum(diff(double(faults(:) > 0)) > 0)      % fault RISING EDGES -- >1 means cycling
+min(D(:, strcmp(dn,'dcl_frac')))          % <1 = the limiter was doing the work
+max(D(:, strcmp(dn,'retry_count')))       % >0 = something recovered and re-tripped
+min(D(:, strcmp(dn,'soc_raw_min')))       % <0 = the pack model went past empty
+```
+
+`max(faults)` is not one of them. A run that tripped once and a run that cycled
+thirty times report the same maximum.
 
 ---
 

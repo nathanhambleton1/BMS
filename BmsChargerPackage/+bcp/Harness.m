@@ -208,14 +208,50 @@ classdef Harness < handle
             if size(socPlant,1) == obj.Project.Pack.S, socPlant = socPlant'; end
             socStart = mean(socPlant(1,:));
             socEnd   = mean(socPlant(end,:));
-            loadDuty = mean(D(:,2));
-            chgDuty  = mean(D(:,3) == 0);
-            reasons  = unique(round(D(:,3)));
+
+            % By NAME, not by column. The diag width has changed once already
+            % and a summary indexed by number is a summary that silently starts
+            % reporting a different channel.
+            dn  = bcp.Signals.diagNames();
+            col = @(name) D(:, strcmp(dn, name));
+
+            loadDuty = mean(col('load_active'));
+            chgDuty  = mean(col('arb_reason') == 0);
+            reasons  = unique(round(col('arb_reason')));
             rtxt = cell(numel(reasons),1);
             for k = 1:numel(reasons)
                 rtxt{k} = sprintf('%d=%s (%.0f%%)', reasons(k), ...
                     bcp.Signals.arbReason(reasons(k)), ...
-                    100*mean(round(D(:,3)) == reasons(k)));
+                    100*mean(round(col('arb_reason')) == reasons(k)));
+            end
+
+            % The fault story needs three numbers, not one. max(faults) alone
+            % cannot tell a run that tripped once from a run that cycled thirty
+            % times -- they report the same maximum -- and it says nothing at all
+            % about the limiter, which is what usually kept the trip from firing.
+            faultEdges = sum(diff(double(faults(:) > 0)) > 0);
+
+            % dcl_frac is 0 BY DEFINITION whenever the discharge is inhibited,
+            % so a minimum taken over the whole run reports 0 for a pack that
+            % was held off by protection and never derated at all -- which reads
+            % as "the limiter took the load to zero" and is the opposite of what
+            % happened. Measure it only where discharging was permitted.
+            allowed = col('dch_ok') > 0.5;
+            dclAll  = col('dcl_frac');
+            if any(allowed)
+                dclMin = min(dclAll(allowed));
+            else
+                dclMin = 1;
+            end
+            retryMax   = max(col('retry_count'));
+            lockN      = sum(col('lockout') > 0.5);
+            rawMin     = min(col('soc_raw_min'));
+            limStates  = unique(round(col('limit_state')));
+            ltxt = cell(numel(limStates),1);
+            for k = 1:numel(limStates)
+                ltxt{k} = sprintf('%s (%.0f%%)', ...
+                    bcp.Signals.limitState(limStates(k)), ...
+                    100*mean(round(col('limit_state')) == limStates(k)));
             end
 
             fprintf('\n=== harness summary ===\n');
@@ -227,12 +263,41 @@ classdef Harness < handle
             fprintf('  load active    %.0f%% of the run\n', loadDuty*100);
             fprintf('  charge enabled %.0f%% of the run\n', chgDuty*100);
             fprintf('  arbitration    %s\n', strjoin(rtxt, ', '));
+            fprintf('  discharge lim  %s\n', strjoin(ltxt, ', '));
+            if dclMin < 1 - 1e-9
+                fprintf(['                 load derated to %.0f%% of demand at ', ...
+                         'its worst, while permitted -- the limiter regulating, ', ...
+                         'not a fault\n'], 100*dclMin);
+            end
             fprintf('  faults latched %s\n', bcp.Signals.faultBits(max(faults)));
+            if faultEdges > 1
+                fprintf(2, ['                 LATCHED %d SEPARATE TIMES. More ', ...
+                    'than once is the cyclic fault chain -- see ', ...
+                    'alg/bcp_load_limiter.m\n'], faultEdges);
+            elseif faultEdges == 1
+                fprintf('                 latched once, at one point in the run\n');
+            end
+            if retryMax > 0
+                fprintf('  auto-recovery  %g retry/retries', retryMax);
+                if lockN > 0
+                    fprintf(2, ', then LOCKOUT for %.1f s (reset required)', ...
+                        lockN * obj.Project.Bms.Ts);
+                end
+                fprintf('\n');
+            end
+            if rawMin < -1e-6
+                fprintf(2, ['  pack model SOC went to %.3f%% BEFORE clamping. The ', ...
+                    'battery model has no\n                 floor on its coulomb ', ...
+                    'count, so results past that point are not physical.\n'], ...
+                    100*rawMin);
+            end
             fprintf('\n');
 
             T = table(socStart, socEnd, loadDuty, chgDuty, max(faults), ...
+                faultEdges, dclMin, retryMax, rawMin, ...
                 'VariableNames', {'SOC_start','SOC_end','LoadDuty', ...
-                                  'ChargeDuty','FaultMask'});
+                                  'ChargeDuty','FaultMask','FaultEdges', ...
+                                  'MinDclFrac','MaxRetries','MinRawSOC'});
         end
     end
 
