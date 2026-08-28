@@ -22,11 +22,16 @@ function [ok, T, S, out, p] = pulse195_harness(varargin)
 %                 pulse195_setup section 6 for why it is not zero.
 %     LimiterOn   continuous discharge limiting. Default true. Set it false to
 %                 reproduce a result from before alg/bcp_load_limiter.m existed.
+%     Verbose     print the per-check verification table. Default true. Set it
+%                 false when the run is DELIBERATELY outside what pulse195_verify
+%                 describes -- a deep-discharge run, or one with the limiter
+%                 turned off -- where most of those checks do not apply and
+%                 printing them as failures is just misleading.
 %     Plot        draw the four-panel figure.    Default false.
 
 opt = struct('Period_s',60, 'StopTime_s',[], 'SOC_init',0.60, 'Plot',false, ...
              'Pulse_s',2, 'P_load_W',31250, 'Start_s',5, 'Edge_s',0.05, ...
-             'LimiterOn',true);
+             'LimiterOn',true, 'Verbose',true);
 for k = 1:2:numel(varargin)
     assert(isfield(opt, varargin{k}), 'pulse195:Option', 'Unknown option "%s".', varargin{k});
     opt.(varargin{k}) = varargin{k+1};
@@ -40,7 +45,7 @@ end
                          'Edge_s',opt.Edge_s);
 p.Bms.UseLoadLimiter = opt.LimiterOn;
 p = p.sync();
-p.report();
+if opt.Verbose, p.report(); end
 
 h = bcp.Harness(p, 'CellTables', ct, 'SOC_init', opt.SOC_init);
 h.build();
@@ -49,7 +54,7 @@ h.summary(out);
 
 [ok, T, S] = pulse195_verify(out, p, ct, 'Period_s',opt.Period_s, 'SOC_init',opt.SOC_init, ...
     'Pulse_s',opt.Pulse_s, 'P_load_W',opt.P_load_W, 'Start_s',opt.Start_s, ...
-    'Edge_s',opt.Edge_s);
+    'Edge_s',opt.Edge_s, 'Verbose',opt.Verbose);
 
 if opt.Plot, h.plot(out); end
 end

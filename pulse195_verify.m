@@ -105,12 +105,27 @@ if npulse > 0
     % The width and period checks above need no such allowance: a symmetric ramp
     % moves both half-crossings by the same amount, so the measured width is
     % unchanged. That is why the threshold is half amplitude and not, say, 10%.
-    gap = ~local_mask(S.t, local_widen(pulses, opt.Edge_s + 2*S.dt));
+    %
+    % The tail of the record is excluded for the same reason, and it is not a
+    % cosmetic exclusion. A whole number of periods ends the run exactly on a
+    % pulse edge, so the last few samples hold a RISING RAMP that never reaches
+    % half amplitude -- 6250 W of a 31250 W pulse, at Edge_s = 0.05 and
+    % Ts = 0.01. local_pulses cannot see it (it is below the detection
+    % threshold), so it has no pulse window to be widened, and it lands in the
+    % gap looking exactly like a spurious trickle. Within one edge time of the
+    % end of the record, "the start of a pulse the run was cut off in" and
+    % "load during a gap" are not distinguishable, so the check declines to
+    % guess. With a step edge this never came up: a step is still above the
+    % threshold at the final sample, and local_pulses has an explicit branch for
+    % an interval still open at the end of the record.
+    pad  = opt.Edge_s + 2*S.dt;
+    gap  = ~local_mask(S.t, local_widen(pulses, pad)) & (S.t <= S.t(end) - pad);
     chk(end+1,:) = {'zero load between pulses', max(abs(S.P_load(gap))) < 1e-6, ...
-        sprintf('max |P_load_cmd| off-pulse = %.3g W (edges excluded: %.0f ms ramp)', ...
-        max(abs(S.P_load(gap))), 1000*opt.Edge_s)};
+        sprintf(['max |P_load_cmd| off-pulse = %.3g W (excluded: the %.0f ms ', ...
+                 'ramp on each edge, and the last %.0f ms of the record)'], ...
+        max(abs(S.P_load(gap))), 1000*opt.Edge_s, 1000*pad)};
 
-    edges = local_mask(S.t, local_widen(pulses, opt.Edge_s + 2*S.dt)) & ~onMask;
+    edges = local_mask(S.t, local_widen(pulses, pad)) & ~onMask;
     if any(edges)
         maxSlew = max(abs(diff(S.P_load))) / S.dt;
         chk(end+1,:) = {'pulse edges are ramps, not steps', ...

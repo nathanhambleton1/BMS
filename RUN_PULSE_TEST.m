@@ -31,6 +31,10 @@
 %     tripped, recovered, and tripped again deeper -- max(faults) reports the
 %     same value for both. See the load-limiter section of README.md.
 %
+%     It does NOT run pulse195_verify's table, because that table describes the
+%     nominal test and this run is deliberately outside it: the load is meant to
+%     be derated and the limiter-off half is meant to fault.
+%
 %   THE CADENCE IS SCALED IN STAGES 1 AND 2, AND THE PULSE IS NOT
 %     2 s at 31250 W is the experiment and is never touched. The 600 s gap is
 %     only a rest: with no thermal model and no self-discharge, 598 s of rest
@@ -46,12 +50,15 @@
 %
 %   The UI for all of this is:  bcpSimple
 
-clc;
 root = fileparts(mfilename('fullpath'));
 run(fullfile(root, 'BmsChargerPackage', 'bcp_setup.m'));
 cd(root);
 
-STAGES = [1 2 3 4];     % edit to run a subset
+%  Edit this, or set STAGES in the base workspace before running, which is what
+%  lets a caller re-run one stage without touching the file.
+if ~exist('STAGES','var') || isempty(STAGES)
+    STAGES = [1 2 3 4];
+end
 results = struct('name',{},'ok',{},'checks',{},'failed',{});
 
 %% 1. Fast stand-in, scaled cadence ---------------------------------------
@@ -90,8 +97,13 @@ if any(STAGES == 4)
     for limiterOn = [true false]
         if limiterOn, tag = 'limiter ON'; else, tag = 'limiter OFF'; end
         fprintf('\n---- %s ----\n', tag);
+        % Verbose off on purpose. pulse195_verify describes the NOMINAL test
+        % -- a 60% SOC pack running an unlimited pulse -- and most of it does
+        % not apply here: this run is meant to derate the load, and the
+        % limiter-off half is meant to fault. Printing thirty-odd inapplicable
+        % checks as failures next to the one number that matters would bury it.
         [~,~,S] = pulse195_harness('Period_s',20, 'StopTime_s',300, ...
-            'SOC_init',0.10, 'LimiterOn',limiterOn);
+            'SOC_init',0.10, 'LimiterOn',limiterOn, 'Verbose',false);
         deep(end+1) = struct('tag',tag, ...
             'edges', sum(diff(double(S.faults > 0)) > 0), ...
             'Vmin',  min(S.V_min), ...

@@ -217,7 +217,10 @@ build, and `Q_uv_reset_Ah = 0` restores the old rest-is-enough behaviour.
 `UseLoadLimiter = false` restores the pre-limiter behaviour bit for bit, for
 reproducing an earlier result. `pulse195_model('LimiterOn', false)` and
 `pulse195_harness('LimiterOn', false)` do it for the bundled test, and stage 4 of
-`RUN_PULSE_TEST.m` runs both sides and prints the comparison.
+`RUN_PULSE_TEST.m` runs both sides and prints the comparison. Stage 4 uses the
+fast stand-in plant, so its voltages differ from the Simscape numbers above by a
+few tens of millivolts; the fault-edge counts are the same, 4 against 0, which is
+the part that is about the control law rather than about the cell model.
 
 ## Reading `faults`: 5 and 10 are sums, not codes
 
