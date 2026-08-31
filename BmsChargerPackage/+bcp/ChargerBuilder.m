@@ -247,6 +247,12 @@ classdef ChargerBuilder < handle
                 bcp.Blocks.literal(obj.Cfg.I_cc_A), ...
                 bcp.Blocks.literal(obj.Cfg.P_chg_max_W), ...
                 p);
+
+            % bcp_charger used to be a call against BmsChargerPackage/alg on the
+            % path. Pasting its source in as a local function makes Charger_core
+            % self-contained the same way BMS_core is -- see
+            % bcp.Blocks.embedAlgFunctions.
+            s = [s, bcp.Blocks.embedAlgFunctions({'bcp_charger'})];
         end
     end
 end

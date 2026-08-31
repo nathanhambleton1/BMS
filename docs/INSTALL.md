@@ -154,11 +154,13 @@ hand and the classic result is `diag` wired into the charger's `pack_meas`
 input, reported as a width mismatch — "expected `[7]`, got `[17]`" — against the
 charger's input delay, which is not where the mistake is.
 
-**The blocks carry their own constants.** Every threshold is compiled in as a
-numeric literal, so they mean the same thing in your model as they did in the
-window, on a machine with an empty base workspace. What they do need is
-`bcp_setup` on the MATLAB path of whatever session runs the model, because the
-generated code calls the functions in `alg/`.
+**The blocks carry their own constants, and their own algorithm.** Every
+threshold is compiled in as a numeric literal, and the control code from
+`alg/` is pasted in as local functions inside the generated block, so the two
+blocks mean the same thing in your model as they did in the window, on a
+machine with an empty base workspace and this package nowhere on its path.
+That is also why **copying just the BMS and Charger blocks** into a fresh
+model, deleting `BmsChargerPackage`, still compiles.
 
 **Inserting is repeatable.** It deletes any previous block of the same name
 first, so changing a threshold and re-inserting is the normal edit cycle and
@@ -312,16 +314,16 @@ state of charge has left 0..1. [blocks.md](blocks.md) lists all seventeen.
 
 ## One thing to remember afterwards
 
-The generated blocks call functions in `BmsChargerPackage/alg/`, so **`bcp_setup`
-must have run in the session before your model will compile**. `START_HERE.m`
-does that. If you send the model to a colleague, send this folder with it — or
-add this to your model's `PostLoadFcn`:
+Nothing, for the compiled blocks themselves. `BMS_core` and `Charger_core`
+carry the `alg/` control code as local functions, pasted in at build time, so
+a model containing them compiles with `BmsChargerPackage` nowhere on the path
+— send the model to a colleague on its own, or copy just the two blocks into a
+fresh project and delete this folder.
 
-```matlab
-run('<path to>/BmsChargerPackage/bcp_setup.m')
-```
-
-That hardcodes a path into the model, which is why it is not the default.
+`bcp_setup` is still what you need on the path while you are *building* or
+*reconfiguring* the model through the `+bcp` classes (`bcpApp`, `bcpSimple`,
+`bcp.Project`, ...) — `START_HERE.m` does that for the current session. It is
+not something the finished model depends on.
 
 ---
 

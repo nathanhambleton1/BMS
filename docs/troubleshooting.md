@@ -6,17 +6,24 @@ Organised by what you actually see, not by what is actually wrong.
 
 ## Compile and setup errors
 
-### "Undefined function 'bcp_pack_monitor'" (or `bcp_protection`, `bcp_arbiter`, `bcp_charger`, `bcp_load_scheduler`, `bcp_tick`, `bcp_ocv`, `bcp_harness_plant`)
+### "Undefined function 'bcp_pack_monitor'" (or `bcp_protection`, `bcp_arbiter`, `bcp_charger`, `bcp_load_scheduler`, `bcp_tick`)
 
-The generated blocks call these from inside their MATLAB Function blocks, and
-`BmsChargerPackage/alg/` is not on the path.
+`BMS_core` and `Charger_core` paste this code in as local functions, so a
+model built with a current `insert()` does not need `alg/` on the path at all
+— if you are seeing this, the block predates that change. Re-insert it
+(`p.insertInto('myModel')`, or **Copy models** in `bcpSimple`) to regenerate
+it with the algorithm embedded.
+
+`bcp_ocv` and `bcp_harness_plant` are different: they belong to the test
+harness plant model, not to either generated block, so this error for them
+means `BmsChargerPackage/alg/` is not on the path in the session building
+that harness.
 
 ```matlab
 run('<path to>/BmsChargerPackage/bcp_setup.m')
 ```
 
-`START_HERE.m` does it for you. It has to happen once per MATLAB session, before
-the model compiles. If you send the model to a colleague, send the folder too.
+`START_HERE.m` does it for you, once per MATLAB session.
 
 ### "Block diagram 'x' contains 1 algebraic loop"
 

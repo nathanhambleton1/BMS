@@ -26,8 +26,10 @@
 %
 %   WHAT IT DOES, IN ORDER
 %     1. Puts BmsChargerPackage on the MATLAB path (+bcp, alg, app, tests) via
-%        bcp_setup. The generated blocks call functions in alg/, so a model
-%        containing them will not compile without this.
+%        bcp_setup. That is for THIS session, to build and reconfigure models
+%        through the UI or the +bcp classes -- the generated blocks paste the
+%        alg/ code in as local functions, so a model containing them compiles
+%        on its own, with nothing from this package on the path.
 %     2. Checks that Simulink is installed. Simscape is NOT required by these
 %        blocks -- they are pure signal-domain Simulink, which is why they drop
 %        onto a pack model built by any tool. Your battery model needs it; these

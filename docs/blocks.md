@@ -4,6 +4,12 @@ Two blocks, both pure signal-domain Simulink. No Simscape ports, no Simscape
 licence needed by these blocks themselves — which is why they drop onto a pack
 model built by any tool.
 
+Both are also self-contained once inserted: their `MATLAB Function` block
+carries the `alg/` control code as local functions, pasted in at build time by
+`bcp.Blocks.embedAlgFunctions`. Copy `BMS` and `Charger` into a new project and
+delete `BmsChargerPackage` entirely — they still compile, because everything
+they call is already inside the block.
+
 ---
 
 ## BMS

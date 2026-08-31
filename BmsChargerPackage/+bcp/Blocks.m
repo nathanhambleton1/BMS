@@ -201,6 +201,52 @@ classdef Blocks
         end
 
         % ---------------------------------------------------------------
+        function s = embedAlgFunctions(names)
+        %EMBEDALGFUNCTIONS  Local-function text block: alg/*.m, verbatim, banner-wrapped.
+        %
+        %   A generated MATLAB Function block used to CALL these by name and lean
+        %   on BmsChargerPackage/alg being on the MATLAB path (bcp_setup). That is
+        %   fine inside this repo, but it is exactly what broke "copy the BMS and
+        %   Charger blocks into a new project and delete this folder": the copy
+        %   compiled nowhere until the whole alg/ folder came with it.
+        %
+        %   MATLAB resolves a call to a name defined later in the SAME file as a
+        %   local function before it ever consults the path, so pasting the alg
+        %   source in after the block's main fcn makes the block find its own
+        %   dependencies first, wherever it is copied. alg/ stays the place you
+        %   edit and unit-test the algorithm in isolation -- coreCode() just
+        %   copies the current text in at build time, so the two can never drift.
+        %
+        %   NAMES is a cellstr of alg/*.m filenames (without the extension). Order
+        %   does not matter: MATLAB collects every local function in a file before
+        %   resolving calls between them, so bcp_protection can call bcp_tick
+        %   whichever one is pasted in first.
+            parts = cell(numel(names) + 1, 1);
+            parts{1} = sprintf([ ...
+                '\n' ...
+                '%%%% ===== EMBEDDED FROM BmsChargerPackage/alg -- do not edit here =====\n' ...
+                '%%%%  Copied verbatim at build time (bcp.Blocks.embedAlgFunctions) so this\n' ...
+                '%%%%  block has no dependency on BmsChargerPackage/alg being on the path.\n' ...
+                '%%%%  Edit the algorithm there and re-insert the block; this copy is\n' ...
+                '%%%%  overwritten by the next insert().\n' ...
+                '%%%% ====================================================================\n']);
+            for k = 1:numel(names)
+                parts{k+1} = bcp.Blocks.algSource(names{k});
+            end
+            s = strjoin(parts, newline);
+        end
+
+        % ---------------------------------------------------------------
+        function s = algSource(name)
+        %ALGSOURCE  Verbatim text of one alg/*.m file, for embedAlgFunctions.
+            pkgDir = fileparts(fileparts(mfilename('fullpath')));   % .../BmsChargerPackage
+            f = fullfile(pkgDir, 'alg', [name '.m']);
+            assert(exist(f,'file') == 2, 'bcp:Blocks:NoAlgFile', ...
+                'No alg/%s.m next to the bcp package at "%s".', name, pkgDir);
+            s = fileread(f);
+        end
+
+        % ---------------------------------------------------------------
         function h = port(blk, side, idx)
         %PORT  A single Simulink signal port handle.
             if nargin < 3, idx = 1; end
