@@ -1,0 +1,10 @@
+Error compiling Simscape network for model Main3.
+Caused by:
+['Main3/p3/ModuleAssembly2/M13']: Length of Cell state of charge must be equal to Number of cells in battery.
+Stack trace
+Component:Simulink | Category:Model error
+
+it seems like when i tried to create a new battery in a new simulink file with a new battery configuration with new detailed percentage cells within the battery builder it seemed to give this error? im wondering if there is a way to 
+make sure that this issue doesnt arrise again with any configuration of batteries with cells modules and stuff for example we did the 1 cell, 1 parallel assembly, then 13 modules, 5 mod assemblies, 3 packs which was all in series
+and i did as much detailed and percentage deviation as the ui battery builder would let me. when i ran the bms ui thing you made to apply the percentage devication to the back in the custom pack and it said it only applied to 15
+divations which i thought it would be more like 195 deviation?
