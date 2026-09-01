@@ -58,6 +58,17 @@ classdef CellVariation < handle
 %     apply() counts what it found and says which of the two you have got. It
 %     does not pretend a lumped pack has cell spread.
 %
+%   A DETAILED BLOCK IS ONE INSTANCE, NOT ONE CELL
+%     "Cell state of charge" on a Detailed-resolution block is a per-cell
+%     VECTOR sized to that block's "Number of cells in battery" -- Simscape
+%     asserts the two match at compile time. apply() applies one spread value
+%     per matched block and broadcasts it across every entry of that vector,
+%     rather than one independent draw per physical cell, so it never changes
+%     a vector's length. Do not mistake "N elements found" for "N cells
+%     varied": the report line printed by apply() says both -- how many
+%     blocks it touched, and how many physical cells those blocks represent
+%     in total -- exactly because those two numbers can differ.
+%
 %   REVERT IS EXACT, NOT APPROXIMATE
 %     Every parameter string is stored verbatim before it is written, and
 %     revert() puts those strings back. It does not recompute a "nominal"
@@ -166,6 +177,11 @@ classdef CellVariation < handle
                 obj.revert();
             end
 
+            totalCells = 0;
+            for k = 1:n
+                totalCells = totalCells + obj.cellCount(blks{k});
+            end
+
             [socF, qF, rF] = obj.draws(n);
 
             paths = cell(n,1); socOut = zeros(n,1);
@@ -194,7 +210,7 @@ classdef CellVariation < handle
             T = table(paths, socOut, qMul, rMul, ...
                 'VariableNames', {'Element','SOC_init','Capacity_x','Resistance_x'});
 
-            obj.report(target, n, T, opt.DryRun, failed);
+            obj.report(target, n, totalCells, T, opt.DryRun, failed);
         end
 
         % -----------------------------------------------------------------
@@ -268,6 +284,17 @@ classdef CellVariation < handle
         % -----------------------------------------------------------------
         function socSet = applyOne(obj, blk, socDelta, qMul, rMul, dry)
         %APPLYONE  Write one element's three parameters.
+        %
+        %   socCell and AHCell are scalar on a Lumped-resolution block, but on
+        %   a Detailed-resolution one (every physical cell modelled, which is
+        %   what Battery Model Builder's own "detailed / percentage deviation"
+        %   option produces) they are vectors sized to that block's "Number of
+        %   cells in battery". Simscape asserts that length at compile time, so
+        %   this tool must never change it -- readAny/writeAny below apply the
+        %   same delta or multiplier to every entry and write it back in
+        %   whatever shape it already had, scalar or vector. Collapsing a
+        %   vector down to a single value here is exactly what used to make a
+        %   perfectly good pack fail to compile after a call to apply().
             dp = get_param(blk, 'DialogParameters');
             socSet = NaN;
 
@@ -278,15 +305,17 @@ classdef CellVariation < handle
             wantSOC = isfield(dp, 'socCell') && ...
                       (obj.SOC_spread_pct > 0 || ~isempty(obj.SOC_base));
             if wantSOC
-                base = obj.SOC_base;
-                if isempty(base)
-                    base = obj.readScalar(blk, 'socCell');
-                    if isnan(base), base = 1; end
+                if ~isempty(obj.SOC_base)
+                    base = obj.SOC_base;
+                else
+                    base = obj.readAny(blk, 'socCell');
+                    if isempty(base), base = 1; end
                 end
-                socSet = min(max(base + socDelta, 0.01), 1.0);
+                setVal = min(max(base + socDelta, 0.01), 1.0);
+                socSet = setVal(1);
                 if ~dry
                     obj.stash(blk, 'socCell');
-                    set_param(blk, 'socCell', num2str(socSet, '%.6g'));
+                    obj.writeAny(blk, 'socCell', setVal, 6);
                     % Setting the value is NOT enough. Every Simscape variable
                     % target has a companion _specify flag that ships 'off', and
                     % with it off the value reads back correctly from get_param,
@@ -301,10 +330,10 @@ classdef CellVariation < handle
 
             % --- capacity -------------------------------------------------
             if isfield(dp, 'AHCell') && obj.Q_spread_pct > 0
-                base = obj.readScalar(blk, 'AHCell');
-                if ~isnan(base) && ~dry
+                base = obj.readAny(blk, 'AHCell');
+                if ~isempty(base) && ~dry
                     obj.stash(blk, 'AHCell');
-                    set_param(blk, 'AHCell', num2str(base * qMul, '%.10g'));
+                    obj.writeAny(blk, 'AHCell', base * qMul, 10);
                 end
             end
 
@@ -332,17 +361,6 @@ classdef CellVariation < handle
             set_param(blk, param, value);
         end
 
-        function v = readScalar(~, blk, param)
-            s = get_param(blk, param);
-            v = str2double(s);
-            if isnan(v)
-                % A parameter written as an expression rather than a literal.
-                % Leave it alone rather than guessing: evaluating it here would
-                % resolve against the wrong workspace as often as the right one.
-                v = NaN;
-            end
-        end
-
         function v = readVector(~, blk, param)
             s = get_param(blk, param);
             v = str2num(s); %#ok<ST2NM>  vectors need str2num, not str2double
@@ -351,17 +369,80 @@ classdef CellVariation < handle
             end
         end
 
+        function v = readAny(~, blk, param)
+        %READANY  Read a parameter that may be a scalar OR a vector, as
+        %   whichever it turns out to be -- str2double first (cheap, and the
+        %   common case), str2num as a fallback for a vector/matrix literal.
+        %   Returns [] for anything that parses as neither, e.g. a parameter
+        %   written as an expression rather than a literal; the caller decides
+        %   what "not found" should mean rather than this guessing at it.
+            s = get_param(blk, param);
+            v = str2double(s);
+            if ~isnan(v), return; end
+            v = str2num(s); %#ok<ST2NM>
+            if ~isnumeric(v) || isempty(v)
+                v = [];
+            end
+        end
+
+        function writeAny(~, blk, param, v, sig)
+        %WRITEANY  Write V back in whatever literal form matches its size, so
+        %   a parameter's length is never altered by this tool: a plain number
+        %   for a scalar (what most of these are, on a Lumped-resolution
+        %   block), an explicit array literal for a vector (what a
+        %   Detailed-resolution block's per-cell state looks like). SIG is
+        %   significant digits.
+            if isscalar(v)
+                set_param(blk, param, num2str(v, sprintf('%%.%dg', sig)));
+            else
+                set_param(blk, param, mat2str(v, sig));
+            end
+        end
+
+        function n = cellCount(~, blk)
+        %CELLCOUNT  How many physical cells this one matched block instance
+        %   represents: 1 on a Lumped-resolution block, or the vector length
+        %   Simscape checks against "Number of cells in battery" on a
+        %   Detailed one. socCell is the only parameter this can be read from
+        %   -- AHCell and R0_vecCell are per-cell-TYPE curves/values shared by
+        %   every cell in the block, not one entry per physical cell, so their
+        %   length says nothing about cell count.
+            n = 1;
+            try
+                dp = get_param(blk, 'DialogParameters');
+            catch
+                return;
+            end
+            if ~isfield(dp, 'socCell')
+                return;
+            end
+            s = get_param(blk, 'socCell');
+            if ~isnan(str2double(s))
+                return;
+            end
+            v = str2num(s); %#ok<ST2NM>
+            if isnumeric(v) && ~isempty(v)
+                n = numel(v);
+            end
+        end
+
         % -----------------------------------------------------------------
-        function report(obj, target, n, T, dry, failed)
+        function report(obj, target, n, totalCells, T, dry, failed)
             if dry
                 head = 'would apply';
             else
                 head = 'applied';
             end
             fprintf('\n=== bcp cell variation: %s ===\n', target);
-            fprintf('  %s to %d battery element(s), seed %d, %s distribution\n', ...
-                head, n, obj.Seed, lower(obj.Distribution));
-            if n == 1
+            if totalCells > n
+                fprintf(['  %s to %d battery element(s) -- %d physical cell(s) ', ...
+                         'total -- seed %d, %s distribution\n'], ...
+                    head, n, totalCells, obj.Seed, lower(obj.Distribution));
+            else
+                fprintf('  %s to %d battery element(s), seed %d, %s distribution\n', ...
+                    head, n, obj.Seed, lower(obj.Distribution));
+            end
+            if totalCells == 1
                 fprintf(2, ['  ONLY ONE ELEMENT. A single component cannot have ', ...
                     'cell-to-cell spread --\n  this pack is lumped down to one ', ...
                     'cell model. Rebuild it at a finer\n  model resolution in ', ...
@@ -377,9 +458,19 @@ classdef CellVariation < handle
                 end
                 fprintf('  resistance spans %.3fx to %.3fx nominal\n', ...
                     min(T.Resistance_x), max(T.Resistance_x));
-                fprintf(['  NOTE: these are per COMPONENT INSTANCE. On a lumped ', ...
-                         'pack each instance is a\n        whole module, so this ', ...
-                         'is module-to-module spread, not cell-to-cell.\n']);
+                if totalCells > n
+                    fprintf(['  NOTE: each of the %d element(s) above is a Detailed-', ...
+                             'resolution block covering more\n        than one ', ...
+                             'physical cell (%d total). This tool applies one spread ', ...
+                             'value per\n        BLOCK INSTANCE and broadcasts it to ', ...
+                             'every cell inside that block, so cells\n        within ', ...
+                             'the same instance will not diverge from each other.\n'], ...
+                        n, totalCells);
+                else
+                    fprintf(['  NOTE: these are per COMPONENT INSTANCE. On a lumped ', ...
+                             'pack each instance is a\n        whole module, so this ', ...
+                             'is module-to-module spread, not cell-to-cell.\n']);
+                end
             end
             for k = 1:numel(failed)
                 fprintf(2, '  FAILED %s\n', failed{k});
